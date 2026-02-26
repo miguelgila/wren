@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  resolve-tag:
+    name: Resolve Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  validate-tag:
+    name: Validate Tag
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+      - name: Validate tag matches Cargo.toml version
+        run: |
+          CARGO_VERSION=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          TAG_VERSION="${{ needs.resolve-tag.outputs.version }}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version validated: $TAG_VERSION"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: [resolve-tag, validate-tag]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            docker_image: messense/rust-musl-cross:x86_64-musl
+          - target: aarch64-unknown-linux-musl
+            docker_image: messense/rust-musl-cross:aarch64-musl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+      - name: Build static binaries
+        run: |
+          docker run --rm \
+            -v "$(pwd):/home/rust/src" \
+            ${{ matrix.docker_image }} \
+            cargo build --workspace --release
+      - name: Package tarballs
+        run: |
+          VERSION="${{ needs.resolve-tag.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+
+          # Package scythe-controller
+          CONTROLLER_DIR="scythe-controller-${VERSION}-${TARGET}"
+          mkdir -p "${CONTROLLER_DIR}"
+          cp "target/${TARGET}/release/scythe-controller" "${CONTROLLER_DIR}/"
+          cp LICENSE README.md "${CONTROLLER_DIR}/"
+          tar czf "${CONTROLLER_DIR}.tar.gz" "${CONTROLLER_DIR}"
+
+          # Package scythe-cli
+          CLI_DIR="scythe-cli-${VERSION}-${TARGET}"
+          mkdir -p "${CLI_DIR}"
+          cp "target/${TARGET}/release/scythe-cli" "${CLI_DIR}/"
+          cp LICENSE README.md "${CLI_DIR}/"
+          tar czf "${CLI_DIR}.tar.gz" "${CLI_DIR}"
+
+          # Combined tarball
+          COMBINED_DIR="scythe-${VERSION}-${TARGET}"
+          mkdir -p "${COMBINED_DIR}"
+          cp "target/${TARGET}/release/scythe-controller" "${COMBINED_DIR}/"
+          cp "target/${TARGET}/release/scythe-cli" "${COMBINED_DIR}/"
+          cp LICENSE README.md "${COMBINED_DIR}/"
+          tar czf "${COMBINED_DIR}.tar.gz" "${COMBINED_DIR}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: "*.tar.gz"
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: [resolve-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+      - name: Install git-cliff
+        run: cargo install git-cliff
+      - name: Generate release notes
+        run: git-cliff --config cliff.toml --latest --strip header > RELEASE_NOTES.md
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > checksums-sha256.txt
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign checksums (keyless)
+        run: cosign sign-blob --yes artifacts/checksums-sha256.txt --output-signature artifacts/checksums-sha256.txt.sig --output-certificate artifacts/checksums-sha256.txt.pem
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-tag.outputs.tag }}
+          name: ${{ needs.resolve-tag.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            artifacts/*.tar.gz
+            artifacts/checksums-sha256.txt
+            artifacts/checksums-sha256.txt.sig
+            artifacts/checksums-sha256.txt.pem

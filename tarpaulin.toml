@@ -1,0 +1,5 @@
+[default]
+timeout = "600s"
+fail-under = 45
+out = ["xml"]
+workspace = true

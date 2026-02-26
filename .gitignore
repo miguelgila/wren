@@ -1,0 +1,25 @@
+# Build artifacts
+/target/
+**/target/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+tarpaulin-report.html
+cobertura.xml
+lcov.info
+
+# Claude Code
+.claude/
+
+# OMC
+.omc/

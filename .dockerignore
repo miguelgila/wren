@@ -1,0 +1,6 @@
+target
+.git
+.github
+.vscode
+node_modules
+**/target

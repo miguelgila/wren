@@ -1,0 +1,76 @@
+name: Auto Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  auto-release:
+    name: Bump Version and Release
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'skip-release')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Check for release loop
+        run: |
+          LAST_COMMIT=$(git log -1 --pretty=%s)
+          if [[ "$LAST_COMMIT" == chore\(release\):* ]]; then
+            echo "Last commit is a release commit, skipping to avoid loop"
+            exit 0
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install git-cliff
+        run: cargo install git-cliff
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          CURRENT=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          sed -i "/^\[workspace\.package\]/,/^\[/s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped version: ${CURRENT} → ${NEW_VERSION}"
+
+      - name: Update lockfile
+        run: cargo generate-lockfile
+
+      - name: Generate changelog
+        run: git-cliff --config cliff.toml --output CHANGELOG.md
+
+      - name: Commit and tag
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): v${VERSION} [skip ci]"
+          git tag "v${VERSION}"
+          git push origin main --follow-tags
+
+      - name: Trigger release workflow
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          gh workflow run release.yml --field tag="v${{ steps.bump.outputs.version }}"
