@@ -2,11 +2,12 @@
 # run-integration-tests.sh — Comprehensive integration test runner for Bubo HPC scheduler.
 #
 # Usage:
-#   ./scripts/run-integration-tests.sh
+#   ./scripts/run-integration-tests.sh                     # Full run (build + kind + all tests)
+#   ./scripts/run-integration-tests.sh --skip-cargo        # Skip cargo build & Rust tests
+#   ./scripts/run-integration-tests.sh --no-cleanup        # Keep kind cluster after run
+#   ./scripts/run-integration-tests.sh --verbose           # Print verbose output to stdout
 #
-# Environment variables:
-#   KEEP_CLUSTER=1           — skip cluster teardown after tests
-#   SKIP_BUILD=1             — skip Docker image build (use pre-built image)
+# Environment variables (override defaults):
 #   IMAGE_TAG=<tag>          — controller image tag (default: latest)
 #   CLUSTER_NAME=<name>      — kind cluster name (default: bubo-test)
 #   NAMESPACE=<ns>           — controller namespace (default: bubo-system)
@@ -18,7 +19,7 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (env var defaults)
 # ---------------------------------------------------------------------------
 CLUSTER_NAME="${CLUSTER_NAME:-bubo-test}"
 NAMESPACE="${NAMESPACE:-bubo-system}"
@@ -29,9 +30,7 @@ IMAGE_REF="${IMAGE_NAME}:${IMAGE_TAG}"
 CONTROLLER_TIMEOUT="${CONTROLLER_TIMEOUT:-120}"
 JOB_TIMEOUT="${JOB_TIMEOUT:-90}"
 LOG_DIR="/tmp/bubo-integration-logs"
-KEEP_CLUSTER="${KEEP_CLUSTER:-0}"
-SKIP_BUILD="${SKIP_BUILD:-0}"
-# TESTS controls which suites run: "rust", "shell", or "all" (default)
+LOG_FILE="${LOG_DIR}/integration-test.log"
 TESTS="${TESTS:-all}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +42,59 @@ KIND_CONFIG="${REPO_ROOT}/kind-config.yaml"
 BUBO_JOB_LABEL="bubo.io/job-name"
 
 # ---------------------------------------------------------------------------
+# Flags (set via CLI arguments, matching Reaper's interface)
+# ---------------------------------------------------------------------------
+SKIP_CARGO=false
+NO_CLEANUP=false
+VERBOSE=false
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --skip-cargo)  SKIP_CARGO=true; shift ;;
+    --no-cleanup)  NO_CLEANUP=true; shift ;;
+    --verbose)     VERBOSE=true; shift ;;
+    -h|--help)
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose]"
+      echo "  --skip-cargo  Skip cargo build and Rust integration tests"
+      echo "  --no-cleanup  Keep kind cluster after run"
+      echo "  --verbose     Also print verbose output to stdout"
+      echo ""
+      echo "Environment variables:"
+      echo "  CLUSTER_NAME   Kind cluster name (default: bubo-test)"
+      echo "  IMAGE_TAG      Controller image tag (default: latest)"
+      echo "  TESTS          Test suites: rust|shell|all (default: all)"
+      echo "  JOB_TIMEOUT    Seconds to wait for job status (default: 90)"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# Apply flag effects to config variables
+if $SKIP_CARGO; then
+  # --skip-cargo implies: skip docker build AND skip Rust integration tests
+  SKIP_BUILD="1"
+  if [[ "$TESTS" == "all" ]]; then
+    TESTS="shell"
+  fi
+else
+  SKIP_BUILD="${SKIP_BUILD:-0}"
+fi
+
+if $NO_CLEANUP; then
+  KEEP_CLUSTER="1"
+else
+  KEEP_CLUSTER="${KEEP_CLUSTER:-0}"
+fi
+
+# ---------------------------------------------------------------------------
 # Colours & logging helpers
 # ---------------------------------------------------------------------------
 RED='\033[0;31m'
@@ -52,12 +104,24 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-log()      { echo -e "${BLUE}[INFO]${RESET}  $*"; }
-success()  { echo -e "${GREEN}[PASS]${RESET}  $*"; }
-warn()     { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-error()    { echo -e "${RED}[FAIL]${RESET}  $*" >&2; }
-section()  { echo -e "\n${BOLD}==> $*${RESET}"; }
-skip()     { echo -e "${YELLOW}[SKIP]${RESET}  $*"; }
+# When --verbose is set, output goes to both stdout and the log file.
+# Otherwise, only section headers, pass/fail, and errors go to stdout;
+# detailed [INFO] lines go only to the log file.
+_emit() {
+    local msg="$1"
+    local to_stdout="${2:-true}"
+    echo -e "$msg" >> "${LOG_FILE}" 2>/dev/null || true
+    if [[ "$to_stdout" == "true" ]] || $VERBOSE; then
+        echo -e "$msg"
+    fi
+}
+
+log()      { _emit "${BLUE}[INFO]${RESET}  $*" "false"; }
+success()  { _emit "${GREEN}[PASS]${RESET}  $*" "true"; }
+warn()     { _emit "${YELLOW}[WARN]${RESET}  $*" "true"; }
+error()    { _emit "${RED}[FAIL]${RESET}  $*" "true"; }
+section()  { _emit "\n${BOLD}==> $*${RESET}" "true"; }
+skip()     { _emit "${YELLOW}[SKIP]${RESET}  $*" "true"; }
 
 # ---------------------------------------------------------------------------
 # Test summary tracking
@@ -169,8 +233,8 @@ cleanup() {
     section "Collecting logs before cleanup"
     collect_logs || true
 
-    if [[ "$KEEP_CLUSTER" == "1" ]]; then
-        warn "KEEP_CLUSTER=1 — skipping cluster teardown"
+    if $NO_CLEANUP || [[ "$KEEP_CLUSTER" == "1" ]]; then
+        warn "--no-cleanup — skipping cluster teardown"
         warn "To delete manually: kind delete cluster --name ${CLUSTER_NAME}"
     else
         section "Tearing down kind cluster"
@@ -267,8 +331,8 @@ setup_cluster() {
 # ---------------------------------------------------------------------------
 build_binary() {
     section "Building controller binary"
-    if [[ "$SKIP_BUILD" == "1" ]]; then
-        log "SKIP_BUILD=1 — skipping cargo build"
+    if $SKIP_CARGO || [[ "$SKIP_BUILD" == "1" ]]; then
+        log "Skipping cargo build (--skip-cargo)"
         return
     fi
     log "Running: cargo build --release -p bubo-controller"
@@ -287,8 +351,8 @@ build_binary() {
 build_and_load_image() {
     section "Building Docker image ${IMAGE_REF}"
 
-    if [[ "$SKIP_BUILD" == "1" ]]; then
-        log "SKIP_BUILD=1 — assuming image '${IMAGE_REF}' already exists locally"
+    if $SKIP_CARGO || [[ "$SKIP_BUILD" == "1" ]]; then
+        log "Skipping Docker build (--skip-cargo)"
     else
         log "Building: docker build -f ${DOCKERFILE} -t ${IMAGE_REF} ${REPO_ROOT}"
         docker build \
@@ -1110,11 +1174,15 @@ main() {
     echo "  Namespace:   ${NAMESPACE}"
     echo "  Image:       ${IMAGE_REF}"
     echo "  Test suites: ${TESTS}"
-    echo "  Log dir:     ${LOG_DIR}"
+    echo "  Skip cargo:  ${SKIP_CARGO}"
+    echo "  No cleanup:  ${NO_CLEANUP}"
+    echo "  Verbose:     ${VERBOSE}"
+    echo "  Log file:    ${LOG_FILE}"
     echo "========================================================"
     echo -e "${RESET}"
 
     mkdir -p "${LOG_DIR}"
+    : > "${LOG_FILE}"  # truncate log file
 
     check_prereqs
     # Register cleanup trap after prereq check so we don't try to delete a
@@ -1139,8 +1207,8 @@ main() {
 
     log "Logs saved to: ${LOG_DIR}"
 
-    if [[ "$KEEP_CLUSTER" == "1" ]]; then
-        warn "KEEP_CLUSTER=1 — cluster '${CLUSTER_NAME}' left running"
+    if $NO_CLEANUP || [[ "$KEEP_CLUSTER" == "1" ]]; then
+        warn "--no-cleanup — cluster '${CLUSTER_NAME}' left running"
     fi
 
     # Exit non-zero if any tests failed
