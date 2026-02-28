@@ -1,11 +1,11 @@
-# Scythe — HPC Job Scheduler for Kubernetes
+# Bubo — HPC Job Scheduler for Kubernetes
 
 > A lightweight, Slurm-inspired HPC job scheduler built in Rust for Kubernetes,
 > with multi-node MPI support and optional bare-metal execution via [Reaper](https://github.com/miguelgila/reaper).
 
 ## Project Vision
 
-Scythe bridges the gap between traditional HPC workload management (Slurm/PBS)
+Bubo bridges the gap between traditional HPC workload management (Slurm/PBS)
 and cloud-native Kubernetes orchestration. It provides gang scheduling, topology-aware
 placement, priority queues with backfill, and MPI-native job execution — all as a
 Kubernetes-native controller written in Rust.
@@ -22,11 +22,11 @@ Kubernetes-native controller written in Rust.
 ```
                      ┌──────────────────────────┐
                      │     User Interface        │
-                     │  scythe CLI / CRD / API   │
+                     │  bubo CLI / CRD / API   │
                      └────────────┬─────────────┘
                                   │
                      ┌────────────▼─────────────┐
-                     │   Scythe Controller       │
+                     │   Bubo Controller       │
                      │        (Rust)             │
                      │                           │
                      │  ┌───────┐ ┌───────────┐  │
@@ -67,7 +67,7 @@ Kubernetes-native controller written in Rust.
 ## Repository Structure
 
 ```
-scythe/
+bubo/
 ├── CLAUDE.md                  # This file — project plan and dev guide
 ├── README.md                  # User-facing documentation
 ├── Cargo.toml                 # Workspace root
@@ -75,7 +75,7 @@ scythe/
 ├── LICENSE                    # Apache-2.0
 │
 ├── crates/
-│   ├── scythe-core/           # Shared types, CRD definitions, traits
+│   ├── bubo-core/           # Shared types, CRD definitions, traits
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -84,7 +84,7 @@ scythe/
 │   │       ├── backend.rs     # ExecutionBackend trait
 │   │       └── error.rs       # Error types
 │   │
-│   ├── scythe-scheduler/      # Scheduling algorithms
+│   ├── bubo-scheduler/      # Scheduling algorithms
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -94,7 +94,7 @@ scythe/
 │   │       ├── backfill.rs    # Backfill scheduler (Slurm-style)
 │   │       └── resources.rs   # Resource accounting and tracking
 │   │
-│   ├── scythe-controller/     # Kubernetes controller (main binary)
+│   ├── bubo-controller/     # Kubernetes controller (main binary)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs        # Entry point, controller setup
@@ -105,23 +105,23 @@ scythe/
 │   │       ├── mpi.rs         # MPI bootstrap (hostfile, SSH keys, PMIx)
 │   │       └── metrics.rs     # Prometheus metrics endpoint
 │   │
-│   └── scythe-cli/            # CLI tool (scythe submit, queue, cancel, etc.)
+│   └── bubo-cli/            # CLI tool (bubo submit, queue, cancel, etc.)
 │       ├── Cargo.toml
 │       └── src/
 │           ├── main.rs
-│           ├── submit.rs      # scythe submit <job.yaml>
-│           ├── queue.rs       # scythe queue (squeue equivalent)
-│           ├── cancel.rs      # scythe cancel <job-id>
-│           ├── status.rs      # scythe status <job-id>
-│           └── logs.rs        # scythe logs <job-id> [--rank N]
+│           ├── submit.rs      # bubo submit <job.yaml>
+│           ├── queue.rs       # bubo queue (squeue equivalent)
+│           ├── cancel.rs      # bubo cancel <job-id>
+│           ├── status.rs      # bubo status <job-id>
+│           └── logs.rs        # bubo logs <job-id> [--rank N]
 │
 ├── manifests/
 │   ├── crds/                  # Generated CRD YAML manifests
 │   │   ├── mpijob.yaml
-│   │   ├── scythequeue.yaml
+│   │   ├── buboqueue.yaml
 │   │   └── podgroup.yaml
 │   ├── rbac/                  # ServiceAccount, ClusterRole, ClusterRoleBinding
-│   ├── deployment.yaml        # Scythe controller Deployment
+│   ├── deployment.yaml        # Bubo controller Deployment
 │   └── examples/
 │       ├── simple-mpi.yaml    # Basic 2-node MPI job
 │       ├── gpu-training.yaml  # Multi-node GPU training job
@@ -150,7 +150,7 @@ kind: MPIJob
 metadata:
   name: my-simulation
 spec:
-  queue: default              # Which ScytheQueue to submit to
+  queue: default              # Which BuboQueue to submit to
   priority: 100               # Job priority (higher = more important)
   walltime: "4h"              # Maximum runtime, enforced with SIGTERM → SIGKILL
 
@@ -164,7 +164,7 @@ spec:
   # Container backend configuration
   container:
     image: nvcr.io/nvidia/pytorch:24.01-py3
-    command: ["mpirun", "-np", "4", "--hostfile", "/etc/scythe/hostfile", "./app"]
+    command: ["mpirun", "-np", "4", "--hostfile", "/etc/bubo/hostfile", "./app"]
     resources:
       limits:
         nvidia.com/gpu: 4
@@ -198,11 +198,11 @@ spec:
       job: previous-simulation
 ```
 
-### ScytheQueue
+### BuboQueue
 
 ```yaml
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: ScytheQueue
+kind: BuboQueue
 metadata:
   name: default
 spec:
@@ -248,7 +248,7 @@ spec:
 ### Phase 2: Smart Scheduling (v0.2.0)
 **Goal:** Topology-aware placement and priority queues.
 
-- [ ] Define `ScytheQueue` CRD
+- [ ] Define `BuboQueue` CRD
 - [ ] Implement priority queue with multiple queues
 - [ ] Implement topology-aware node scoring:
   - [ ] Parse node labels for switch group / rack / zone
@@ -259,7 +259,7 @@ spec:
   - [ ] Queue depth, wait time, scheduling latency
   - [ ] Node utilization, job completion rate
   - [ ] Gang scheduling success/failure ratio
-- [ ] `scythe-cli` basics: `submit`, `queue`, `cancel`, `status`
+- [ ] `bubo-cli` basics: `submit`, `queue`, `cancel`, `status`
 
 ### Phase 3: Reaper Integration (v0.3.0)
 **Goal:** Bare-metal execution backend via Reaper.
@@ -293,7 +293,7 @@ spec:
 - [ ] Leader election for HA controller deployment
 - [ ] Comprehensive error handling and retry logic
 - [ ] Graceful degradation when nodes disappear mid-job
-- [ ] Webhook validation for MPIJob and ScytheQueue CRDs
+- [ ] Webhook validation for MPIJob and BuboQueue CRDs
 - [ ] Helm chart for deployment
 - [ ] Comprehensive documentation
 - [ ] Performance benchmarking (scheduling latency at scale)
@@ -307,7 +307,7 @@ spec:
 - CRD types additionally derive `JsonSchema` and `CustomResource`
 - Async everywhere with `tokio` runtime
 - Tests: unit tests in each module, integration tests in `tests/` directories
-- Keep scheduling algorithms in `scythe-scheduler` pure (no K8s dependencies) so
+- Keep scheduling algorithms in `bubo-scheduler` pure (no K8s dependencies) so
   they can be tested without a cluster
 
 ## Key Design Decisions
@@ -326,7 +326,7 @@ spec:
 4. **Hostfile-based MPI bootstrap (v1)** — simpler than PMIx, works with all MPI
    implementations. Can be enhanced with PMIx support later for Reaper backend.
 
-5. **No sidecar injection** — unlike the MPI Operator, Scythe manages the full
+5. **No sidecar injection** — unlike the MPI Operator, Bubo manages the full
    lifecycle directly. This gives us more control over the scheduling and execution
    flow.
 

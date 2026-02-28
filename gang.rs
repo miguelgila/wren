@@ -1,4 +1,4 @@
-use scythe_core::{ClusterState, NodeResources, Placement, ScytheError};
+use bubo_core::{ClusterState, NodeResources, Placement, BuboError};
 use tracing::debug;
 
 /// Gang scheduler: finds a set of N nodes that can satisfy the job's requirements.
@@ -14,7 +14,7 @@ impl GangScheduler {
         cpu_per_node_millis: u64,
         memory_per_node_bytes: u64,
         gpus_per_node: u32,
-    ) -> Result<Placement, ScytheError> {
+    ) -> Result<Placement, BuboError> {
         let mut feasible: Vec<&NodeResources> = cluster
             .nodes
             .iter()
@@ -44,7 +44,7 @@ impl GangScheduler {
         );
 
         if (feasible.len() as u32) < node_count {
-            return Err(ScytheError::NoFeasiblePlacement {
+            return Err(BuboError::NoFeasiblePlacement {
                 job_name: String::new(), // Caller fills this in
                 reason: format!(
                     "need {} nodes, only {} feasible",
@@ -117,7 +117,7 @@ mod tests {
         let mut allocations = HashMap::new();
         allocations.insert(
             "node-0".to_string(),
-            scythe_core::NodeAllocation {
+            bubo_core::NodeAllocation {
                 used_cpu_millis: 7000,
                 used_memory_bytes: 15_000_000_000,
                 used_gpus: 0,

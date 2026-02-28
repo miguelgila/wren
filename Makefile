@@ -55,7 +55,7 @@ clean: ## Remove build artifacts
 	cargo clean
 
 clean-all: clean ## Remove build artifacts and Docker build cache
-	docker rmi scythe-dev 2>/dev/null || true
+	docker rmi bubo-dev 2>/dev/null || true
 
 ## Help
 

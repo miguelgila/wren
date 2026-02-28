@@ -7,9 +7,9 @@ mod cancel;
 mod status;
 mod logs;
 
-/// 🗡️ Scythe — HPC Job Scheduler for Kubernetes
+/// Bubo — HPC Job Scheduler for Kubernetes
 #[derive(Parser)]
-#[command(name = "scythe", version, about, long_about = None)]
+#[command(name = "bubo", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

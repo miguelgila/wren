@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/scythe-core",
-    "crates/scythe-scheduler",
-    "crates/scythe-controller",
-    "crates/scythe-cli",
+    "crates/bubo-core",
+    "crates/bubo-scheduler",
+    "crates/bubo-controller",
+    "crates/bubo-cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/miguelgila/scythe"
+repository = "https://github.com/miguelgila/bubo"
 
 [workspace.dependencies]
 # Kubernetes

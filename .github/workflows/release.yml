@@ -77,25 +77,25 @@ jobs:
           VERSION="${{ needs.resolve-tag.outputs.version }}"
           TARGET="${{ matrix.target }}"
 
-          # Package scythe-controller
-          CONTROLLER_DIR="scythe-controller-${VERSION}-${TARGET}"
+          # Package bubo-controller
+          CONTROLLER_DIR="bubo-controller-${VERSION}-${TARGET}"
           mkdir -p "${CONTROLLER_DIR}"
-          cp "target/${TARGET}/release/scythe-controller" "${CONTROLLER_DIR}/"
+          cp "target/${TARGET}/release/bubo-controller" "${CONTROLLER_DIR}/"
           cp LICENSE README.md "${CONTROLLER_DIR}/"
           tar czf "${CONTROLLER_DIR}.tar.gz" "${CONTROLLER_DIR}"
 
-          # Package scythe-cli
-          CLI_DIR="scythe-cli-${VERSION}-${TARGET}"
+          # Package bubo-cli
+          CLI_DIR="bubo-cli-${VERSION}-${TARGET}"
           mkdir -p "${CLI_DIR}"
-          cp "target/${TARGET}/release/scythe-cli" "${CLI_DIR}/"
+          cp "target/${TARGET}/release/bubo-cli" "${CLI_DIR}/"
           cp LICENSE README.md "${CLI_DIR}/"
           tar czf "${CLI_DIR}.tar.gz" "${CLI_DIR}"
 
           # Combined tarball
-          COMBINED_DIR="scythe-${VERSION}-${TARGET}"
+          COMBINED_DIR="bubo-${VERSION}-${TARGET}"
           mkdir -p "${COMBINED_DIR}"
-          cp "target/${TARGET}/release/scythe-controller" "${COMBINED_DIR}/"
-          cp "target/${TARGET}/release/scythe-cli" "${COMBINED_DIR}/"
+          cp "target/${TARGET}/release/bubo-controller" "${COMBINED_DIR}/"
+          cp "target/${TARGET}/release/bubo-cli" "${COMBINED_DIR}/"
           cp LICENSE README.md "${COMBINED_DIR}/"
           tar czf "${COMBINED_DIR}.tar.gz" "${COMBINED_DIR}"
       - uses: actions/upload-artifact@v4

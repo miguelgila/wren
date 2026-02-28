@@ -1,18 +1,18 @@
-# 🗡️ Scythe
+# Bubo
 
 **A lightweight, Slurm-inspired HPC job scheduler for Kubernetes — built in Rust.**
 
-Scythe provides multi-node gang scheduling, topology-aware placement, priority queues with backfill, and MPI-native job execution as a Kubernetes-native controller. Optionally execute jobs on bare metal via [Reaper](https://github.com/miguelgila/reaper).
+Bubo provides multi-node gang scheduling, topology-aware placement, priority queues with backfill, and MPI-native job execution as a Kubernetes-native controller. Optionally execute jobs on bare metal via [Reaper](https://github.com/miguelgila/reaper).
 
-> ⚠️ **Early development** — Scythe is under active development and not yet ready for production use.
+> **Early development** — Bubo is under active development and not yet ready for production use.
 
-## Why Scythe?
+## Why Bubo?
 
 Traditional HPC schedulers (Slurm, PBS) are powerful but don't speak Kubernetes.
 Kubernetes schedulers don't understand multi-node gang scheduling or HPC network topology.
-Scythe bridges this gap.
+Bubo bridges this gap.
 
-| Feature | Slurm | Volcano | MPI Operator | **Scythe** |
+| Feature | Slurm | Volcano | MPI Operator | **Bubo** |
 |---|---|---|---|---|
 | Gang scheduling | ✅ | ✅ | ❌ | ✅ |
 | Topology-aware placement | ✅ | Partial | ❌ | ✅ |
@@ -36,7 +36,7 @@ spec:
   walltime: "4h"
   container:
     image: my-registry/my-mpi-app:latest
-    command: ["mpirun", "-np", "4", "--hostfile", "/etc/scythe/hostfile", "./app"]
+    command: ["mpirun", "-np", "4", "--hostfile", "/etc/bubo/hostfile", "./app"]
     resources:
       limits:
         memory: 64Gi
@@ -49,19 +49,19 @@ spec:
 
 ```bash
 # Submit a job
-scythe submit job.yaml
+bubo submit job.yaml
 
 # Check the queue
-scythe queue
+bubo queue
 
 # Check job status
-scythe status my-simulation
+bubo status my-simulation
 
 # View logs for a specific rank
-scythe logs my-simulation --rank 0
+bubo logs my-simulation --rank 0
 
 # Cancel a job
-scythe cancel my-simulation
+bubo cancel my-simulation
 ```
 
 ## Architecture
@@ -78,7 +78,7 @@ cargo build --workspace
 cargo test --workspace
 
 # Build container image
-docker build -f docker/Dockerfile.controller -t scythe-controller:latest .
+docker build -f docker/Dockerfile.controller -t bubo-controller:latest .
 ```
 
 ## License

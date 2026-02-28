@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::*;
 
 /// MPIJob is the primary user-facing CRD for submitting multi-node MPI workloads.
-/// This is the Scythe equivalent of `sbatch`.
+/// This is the Bubo equivalent of `sbatch`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "hpc.cscs.ch",
@@ -171,18 +171,18 @@ pub struct MPIJobStatus {
     pub total_workers: u32,
 }
 
-/// ScytheQueue defines a scheduling queue with policies.
+/// BuboQueue defines a scheduling queue with policies.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "hpc.cscs.ch",
     version = "v1alpha1",
-    kind = "ScytheQueue",
+    kind = "BuboQueue",
     namespaced,
     printcolumn = r#"{"name":"MaxNodes","type":"integer","jsonPath":".spec.maxNodes"}"#,
     printcolumn = r#"{"name":"MaxWalltime","type":"string","jsonPath":".spec.maxWalltime"}"#
 )]
 #[serde(rename_all = "camelCase")]
-pub struct ScytheQueueSpec {
+pub struct BuboQueueSpec {
     /// Maximum total nodes this queue can consume
     pub max_nodes: u32,
     /// Maximum walltime allowed for jobs in this queue
