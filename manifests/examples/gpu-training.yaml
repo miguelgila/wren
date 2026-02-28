@@ -1,0 +1,43 @@
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: distributed-training
+spec:
+  queue: gpu
+  priority: 150
+  nodes: 4
+  tasksPerNode: 4
+  walltime: "8h"
+  container:
+    image: nvcr.io/nvidia/pytorch:24.01-py3
+    command:
+      - mpirun
+      - --hostfile
+      - /etc/bubo/hostfile
+      - -np
+      - "16"
+      - python
+      - -m
+      - torch.distributed.launch
+      - --nproc_per_node=4
+      - train.py
+    resources:
+      limits:
+        nvidia.com/gpu: "4"
+        memory: 64Gi
+      requests:
+        nvidia.com/gpu: "4"
+        memory: 32Gi
+    hostNetwork: true
+    env:
+      - name: NCCL_DEBUG
+        value: INFO
+      - name: NCCL_IB_DISABLE
+        value: "0"
+  mpi:
+    implementation: openmpi
+    sshAuth: true
+    fabricInterface: hsn0
+  topology:
+    preferSameSwitch: true
+    maxHops: 2

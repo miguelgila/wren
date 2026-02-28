@@ -1,0 +1,28 @@
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: reaper-simulation
+spec:
+  queue: default
+  nodes: 4
+  tasksPerNode: 1
+  walltime: "2h"
+  backend: reaper
+  reaper:
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      module load cray-mpich
+      cd ${BUBO_WORKING_DIR:-/scratch/project}
+      srun --ntasks-per-node=1 --hostfile ${BUBO_HOSTFILE} ./my_simulation
+    environment:
+      SCRATCH: /scratch/project
+      OMP_NUM_THREADS: "8"
+    workingDir: /scratch/project
+  mpi:
+    implementation: cray-mpich
+    sshAuth: false
+    fabricInterface: hsn0
+  topology:
+    preferSameSwitch: true
+    maxHops: 2
