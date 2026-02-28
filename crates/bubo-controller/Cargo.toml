@@ -30,3 +30,4 @@ axum = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+reqwest = { workspace = true }

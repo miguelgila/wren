@@ -11,6 +11,7 @@ mod container;
 mod metrics;
 mod mpi;
 mod node_watcher;
+mod reaper;
 mod reconciler;
 mod reservation;
 
