@@ -242,7 +242,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bubo-core",
+ "chrono",
  "clap",
+ "futures",
  "k8s-openapi",
  "kube",
  "serde",
@@ -250,12 +252,14 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
 name = "bubo-controller"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "bubo-core",
