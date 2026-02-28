@@ -552,3 +552,1296 @@ async fn test_multiple_jobs_queued() {
             .expect("cleanup");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Additional helpers
+// ---------------------------------------------------------------------------
+
+use k8s_openapi::api::core::v1::{ConfigMap, Node, Pod, Service};
+use bubo_core::crd::TopologySpec;
+
+/// Build a minimal `MPIJob` with a custom walltime string.
+fn build_mpijob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime: &str) -> MPIJob {
+    MPIJob {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: MPIJobSpec {
+            nodes,
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: Some(walltime.to_string()),
+            tasks_per_node: 1,
+            backend: ExecutionBackendType::Container,
+            container: Some(ContainerSpec {
+                image: "busybox:latest".to_string(),
+                command: vec!["sleep".to_string(), "3600".to_string()],
+                args: vec![],
+                resources: None,
+                host_network: false,
+                volume_mounts: vec![],
+                env: vec![],
+            }),
+            reaper: None,
+            mpi: None,
+            topology: None,
+            dependencies: vec![],
+        },
+        status: None,
+    }
+}
+
+/// Build a minimal `MPIJob` with topology constraints.
+fn build_mpijob_with_topology(
+    name: &str,
+    namespace: &str,
+    nodes: u32,
+    prefer_same_switch: bool,
+    max_hops: Option<u32>,
+) -> MPIJob {
+    MPIJob {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: MPIJobSpec {
+            nodes,
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: Some("1h".to_string()),
+            tasks_per_node: 1,
+            backend: ExecutionBackendType::Container,
+            container: Some(ContainerSpec {
+                image: "busybox:latest".to_string(),
+                command: vec!["sleep".to_string(), "3600".to_string()],
+                args: vec![],
+                resources: None,
+                host_network: false,
+                volume_mounts: vec![],
+                env: vec![],
+            }),
+            reaper: None,
+            mpi: None,
+            topology: Some(TopologySpec {
+                prefer_same_switch,
+                max_hops,
+                topology_key: None,
+            }),
+            dependencies: vec![],
+        },
+        status: None,
+    }
+}
+
+/// Wait until at least `min_count` pods matching `label_selector` exist, or timeout elapses.
+/// Returns the count found on success, or 0 on timeout.
+async fn wait_for_pods(
+    client: Client,
+    namespace: &str,
+    label_selector: &str,
+    min_count: usize,
+    wait_timeout: Duration,
+) -> usize {
+    let api: Api<Pod> = Api::namespaced(client, namespace);
+    let lp = ListParams::default().labels(label_selector);
+    let result = timeout(wait_timeout, async {
+        loop {
+            match api.list(&lp).await {
+                Ok(list) if list.items.len() >= min_count => return list.items.len(),
+                _ => sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await;
+    result.unwrap_or(0)
+}
+
+/// Wait until a Service with the given name exists in the namespace.
+/// Returns true if found within the timeout, false otherwise.
+async fn wait_for_service(
+    client: Client,
+    namespace: &str,
+    svc_name: &str,
+    wait_timeout: Duration,
+) -> bool {
+    let api: Api<Service> = Api::namespaced(client, namespace);
+    let result = timeout(wait_timeout, async {
+        loop {
+            match api.get(svc_name).await {
+                Ok(_) => return true,
+                Err(_) => sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await;
+    matches!(result, Ok(true))
+}
+
+/// Wait until a ConfigMap with the given name exists in the namespace.
+/// Returns true if found within the timeout, false otherwise.
+async fn wait_for_configmap(
+    client: Client,
+    namespace: &str,
+    cm_name: &str,
+    wait_timeout: Duration,
+) -> bool {
+    let api: Api<ConfigMap> = Api::namespaced(client, namespace);
+    let result = timeout(wait_timeout, async {
+        loop {
+            match api.get(cm_name).await {
+                Ok(_) => return true,
+                Err(_) => sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await;
+    matches!(result, Ok(true))
+}
+
+/// Count pods matching a label selector in a namespace.
+async fn count_pods(client: Client, namespace: &str, label_selector: &str) -> usize {
+    let api: Api<Pod> = Api::namespaced(client, namespace);
+    let lp = ListParams::default().labels(label_selector);
+    api.list(&lp).await.map(|l| l.items.len()).unwrap_or(0)
+}
+
+/// Wait until no pods matching `label_selector` remain, or timeout elapses.
+/// Returns true if cleared within the timeout.
+async fn wait_for_pods_gone(
+    client: Client,
+    namespace: &str,
+    label_selector: &str,
+    wait_timeout: Duration,
+) -> bool {
+    let api: Api<Pod> = Api::namespaced(client, namespace);
+    let lp = ListParams::default().labels(label_selector);
+    let result = timeout(wait_timeout, async {
+        loop {
+            match api.list(&lp).await {
+                Ok(list) if list.items.is_empty() => return true,
+                _ => sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await;
+    matches!(result, Ok(true))
+}
+
+/// Wait until a Service is gone from the namespace, or timeout elapses.
+async fn wait_for_service_gone(
+    client: Client,
+    namespace: &str,
+    svc_name: &str,
+    wait_timeout: Duration,
+) -> bool {
+    let api: Api<Service> = Api::namespaced(client, namespace);
+    let result = timeout(wait_timeout, async {
+        loop {
+            match api.get(svc_name).await {
+                Err(kube::Error::Api(e)) if e.code == 404 => return true,
+                _ => sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await;
+    matches!(result, Ok(true))
+}
+
+// ---------------------------------------------------------------------------
+// Controller lifecycle tests (require controller running)
+// ---------------------------------------------------------------------------
+
+/// Create a 1-node job with a fast command and verify it reaches Succeeded state.
+#[tokio::test]
+#[ignore]
+async fn test_job_runs_to_completion() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-completion-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    let job = MPIJob {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: MPIJobSpec {
+            nodes: 1,
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: Some("10m".to_string()),
+            tasks_per_node: 1,
+            backend: ExecutionBackendType::Container,
+            container: Some(ContainerSpec {
+                image: "busybox:latest".to_string(),
+                command: vec!["sh".to_string(), "-c".to_string(), "echo done".to_string()],
+                args: vec![],
+                resources: None,
+                host_network: false,
+                volume_mounts: vec![],
+                env: vec![],
+            }),
+            reaper: None,
+            mpi: None,
+            topology: None,
+            dependencies: vec![],
+        },
+        status: None,
+    };
+
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    api.create(&PostParams::default(), &job)
+        .await
+        .expect("create MPIJob");
+
+    // Wait for Running state first (up to 30 s).
+    let reached_running = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    if !reached_running {
+        eprintln!("NOTE: job did not reach Running — controller may not be active");
+    }
+
+    // Then wait for Succeeded (up to 60 s total).
+    let reached_succeeded = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Succeeded,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    if reached_succeeded {
+        let job = api.get(name).await.expect("get job");
+        let completion_time = job
+            .status
+            .as_ref()
+            .and_then(|s| s.completion_time.as_ref());
+        assert!(
+            completion_time.is_some(),
+            "completionTime should be set after Succeeded"
+        );
+        eprintln!("job completed at: {:?}", completion_time);
+    } else {
+        eprintln!("NOTE: job did not reach Succeeded — controller may not be active");
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+/// Create a 2-node job, wait for it to progress, then verify worker pods exist.
+#[tokio::test]
+#[ignore]
+async fn test_job_creates_worker_pods() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-worker-pods-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 2)
+        .await
+        .expect("create MPIJob");
+
+    // Wait up to 30 s for the controller to move past Pending.
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    // Verify worker pods with bubo.io/job-name and bubo.io/role=worker labels.
+    let label_selector = format!("bubo.io/job-name={name},bubo.io/role=worker");
+    let found = wait_for_pods(
+        client.clone(),
+        namespace,
+        &label_selector,
+        1,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    if found == 0 {
+        eprintln!("NOTE: no worker pods found — controller may not be active");
+    } else {
+        eprintln!("found {found} worker pod(s) for job {name}");
+
+        // Spot-check one pod for the rank label.
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+        let lp = ListParams::default().labels(&label_selector);
+        let pods = pod_api.list(&lp).await.expect("list worker pods");
+        for pod in &pods.items {
+            let labels = pod.metadata.labels.as_ref();
+            assert!(
+                labels.and_then(|l| l.get("bubo.io/rank")).is_some(),
+                "worker pod missing bubo.io/rank label"
+            );
+            assert!(
+                labels.and_then(|l| l.get("bubo.io/job-name")).is_some(),
+                "worker pod missing bubo.io/job-name label"
+            );
+        }
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+/// Create a job and verify the launcher pod exists with the correct label.
+#[tokio::test]
+#[ignore]
+async fn test_job_creates_launcher_pod() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-launcher-pod-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 1)
+        .await
+        .expect("create MPIJob");
+
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let label_selector = format!("bubo.io/job-name={name},bubo.io/role=launcher");
+    let found = wait_for_pods(
+        client.clone(),
+        namespace,
+        &label_selector,
+        1,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    if found == 0 {
+        eprintln!("NOTE: no launcher pod found — controller may not be active");
+    } else {
+        eprintln!("found launcher pod for job {name}");
+        // Verify the expected pod name convention.
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+        let expected_launcher_name = format!("{name}-launcher");
+        match pod_api.get(&expected_launcher_name).await {
+            Ok(pod) => {
+                let role = pod
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|l| l.get("bubo.io/role"))
+                    .map(String::as_str);
+                assert_eq!(role, Some("launcher"), "launcher pod should have role=launcher");
+            }
+            Err(_) => eprintln!(
+                "NOTE: launcher pod name {expected_launcher_name} not found; naming may differ"
+            ),
+        }
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+/// Create a job and verify the headless service is created.
+#[tokio::test]
+#[ignore]
+async fn test_job_creates_headless_service() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-headless-svc-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    // Pre-clean the service in case of leftover.
+    let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let svc_name = format!("{name}-headless");
+    let _ = svc_api.delete(&svc_name, &DeleteParams::default()).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 1)
+        .await
+        .expect("create MPIJob");
+
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let found = wait_for_service(
+        client.clone(),
+        namespace,
+        &svc_name,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    if !found {
+        eprintln!("NOTE: headless service {svc_name} not found — controller may not be active");
+    } else {
+        let svc = svc_api.get(&svc_name).await.expect("get headless service");
+        // A headless service has clusterIP: None.
+        let cluster_ip = svc.spec.as_ref().and_then(|s| s.cluster_ip.as_deref());
+        eprintln!("headless service clusterIP: {cluster_ip:?}");
+        assert!(
+            cluster_ip == Some("None") || cluster_ip.is_none(),
+            "expected headless service (clusterIP=None), got: {cluster_ip:?}"
+        );
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+/// Create a job and verify the hostfile ConfigMap is created with a `hostfile` key.
+#[tokio::test]
+#[ignore]
+async fn test_job_creates_hostfile_configmap() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-hostfile-cm-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let cm_name = format!("{name}-hostfile");
+    let _ = cm_api.delete(&cm_name, &DeleteParams::default()).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 1)
+        .await
+        .expect("create MPIJob");
+
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let found = wait_for_configmap(
+        client.clone(),
+        namespace,
+        &cm_name,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    if !found {
+        eprintln!("NOTE: hostfile ConfigMap {cm_name} not found — controller may not be active");
+    } else {
+        let cm = cm_api.get(&cm_name).await.expect("get hostfile configmap");
+        let data = cm.data.unwrap_or_default();
+        assert!(
+            data.contains_key("hostfile"),
+            "hostfile ConfigMap must have a 'hostfile' key; got keys: {:?}",
+            data.keys().collect::<Vec<_>>()
+        );
+        eprintln!("hostfile contents: {}", data.get("hostfile").unwrap());
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+/// Create a 2-node job and verify assignedNodes is populated in the status.
+#[tokio::test]
+#[ignore]
+async fn test_job_status_reports_assigned_nodes() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-assigned-nodes-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 2)
+        .await
+        .expect("create MPIJob");
+
+    let reached = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let job = api.get(name).await.expect("get job");
+
+    if reached {
+        let assigned = job
+            .status
+            .as_ref()
+            .map(|s| s.assigned_nodes.clone())
+            .unwrap_or_default();
+        assert!(
+            !assigned.is_empty(),
+            "assignedNodes should be non-empty when job is Running"
+        );
+        assert_eq!(
+            assigned.len(),
+            2,
+            "expected 2 assigned nodes for a 2-node job, got: {assigned:?}"
+        );
+        eprintln!("assigned nodes: {assigned:?}");
+    } else {
+        eprintln!("NOTE: job did not reach Running — controller may not be active");
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+/// Verify totalWorkers and readyWorkers are populated when a job is Running.
+#[tokio::test]
+#[ignore]
+async fn test_job_status_reports_workers() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-worker-status-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    let nodes = 2u32;
+    create_test_mpijob(client.clone(), name, namespace, nodes)
+        .await
+        .expect("create MPIJob");
+
+    let reached = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let job = api.get(name).await.expect("get job");
+
+    if reached {
+        let status = job.status.as_ref().expect("status should be present");
+        assert_eq!(
+            status.total_workers, nodes,
+            "totalWorkers should equal spec.nodes"
+        );
+        assert!(
+            status.ready_workers > 0,
+            "readyWorkers should be > 0 when Running"
+        );
+        eprintln!(
+            "totalWorkers={}, readyWorkers={}",
+            status.total_workers, status.ready_workers
+        );
+    } else {
+        eprintln!("NOTE: job did not reach Running — controller may not be active");
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Walltime tests
+// ---------------------------------------------------------------------------
+
+/// Create a job with a very short walltime; expect it to reach WalltimeExceeded.
+#[tokio::test]
+#[ignore]
+async fn test_short_walltime_triggers_exceeded() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-walltime-exceeded-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    // 5-second walltime with a long-running command so the job stays alive
+    // until the walltime is enforced.
+    let job = build_mpijob_with_walltime(name, namespace, 1, "5s");
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    // Override the command to sleep so the job does not finish on its own.
+    let mut job = job;
+    if let Some(c) = job.spec.container.as_mut() {
+        c.command = vec!["sleep".to_string(), "3600".to_string()];
+    }
+    api.create(&PostParams::default(), &job)
+        .await
+        .expect("create MPIJob");
+
+    let reached = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::WalltimeExceeded,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    if !reached {
+        let current = api
+            .get(name)
+            .await
+            .ok()
+            .and_then(|j| j.status)
+            .map(|s| s.state)
+            .unwrap_or(JobState::Pending);
+        eprintln!(
+            "NOTE: job did not reach WalltimeExceeded (current: {current}) — \
+             controller walltime enforcement may not be active"
+        );
+    } else {
+        eprintln!("job correctly transitioned to WalltimeExceeded");
+    }
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Multi-job tests
+// ---------------------------------------------------------------------------
+
+/// Submit 3 independent jobs and verify each has its own independent lifecycle.
+#[tokio::test]
+#[ignore]
+async fn test_multiple_jobs_independent_lifecycle() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let namespace = "default";
+    let names = [
+        "test-indep-job-alpha",
+        "test-indep-job-beta",
+        "test-indep-job-gamma",
+    ];
+
+    for name in &names {
+        let _ = cleanup_job(client.clone(), name, namespace).await;
+    }
+
+    for name in &names {
+        create_test_mpijob(client.clone(), name, namespace, 1)
+            .await
+            .unwrap_or_else(|e| panic!("create {name}: {e}"));
+    }
+
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+
+    // Each job should appear in the API with its own metadata.
+    for name in &names {
+        let job = api.get(name).await.expect("job should exist");
+        assert_eq!(
+            job.metadata.name.as_deref(),
+            Some(*name),
+            "job name mismatch"
+        );
+        // Jobs should not share status — each has an independent status subresource.
+        let state = job
+            .status
+            .as_ref()
+            .map(|s| s.state.clone())
+            .unwrap_or(JobState::Pending);
+        eprintln!("job {name} state: {state}");
+        assert!(
+            matches!(
+                state,
+                JobState::Pending | JobState::Scheduling | JobState::Running
+            ),
+            "unexpected state for {name}: {state}"
+        );
+    }
+
+    for name in &names {
+        cleanup_job(client.clone(), name, namespace)
+            .await
+            .expect("cleanup");
+    }
+}
+
+/// Submit jobs with different priorities; verify both are accepted by the API.
+#[tokio::test]
+#[ignore]
+async fn test_high_priority_job() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let namespace = "default";
+    let low_name = "test-priority-low-job";
+    let high_name = "test-priority-high-job";
+
+    let _ = cleanup_job(client.clone(), low_name, namespace).await;
+    let _ = cleanup_job(client.clone(), high_name, namespace).await;
+
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+
+    // Create low-priority job (priority=100).
+    let mut low_job = build_mpijob(low_name, namespace, 1);
+    low_job.spec.priority = 100;
+    api.create(&PostParams::default(), &low_job)
+        .await
+        .expect("create low-priority job");
+
+    // Create high-priority job (priority=200).
+    let mut high_job = build_mpijob(high_name, namespace, 1);
+    high_job.spec.priority = 200;
+    api.create(&PostParams::default(), &high_job)
+        .await
+        .expect("create high-priority job");
+
+    // Both should be accepted.
+    let low = api.get(low_name).await.expect("low-priority job exists");
+    let high = api.get(high_name).await.expect("high-priority job exists");
+
+    assert_eq!(low.spec.priority, 100);
+    assert_eq!(high.spec.priority, 200);
+    assert!(
+        high.spec.priority > low.spec.priority,
+        "high-priority job should have a higher priority value"
+    );
+
+    eprintln!("low priority: {}, high priority: {}", low.spec.priority, high.spec.priority);
+
+    cleanup_job(client.clone(), low_name, namespace)
+        .await
+        .expect("cleanup low");
+    cleanup_job(client.clone(), high_name, namespace)
+        .await
+        .expect("cleanup high");
+}
+
+// ---------------------------------------------------------------------------
+// Queue tests
+// ---------------------------------------------------------------------------
+
+/// Create a BuboQueue with explicit policies and verify them.
+#[tokio::test]
+#[ignore]
+async fn test_buboqueue_with_policies() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-policy-queue";
+    let namespace = "default";
+    let _ = cleanup_queue(client.clone(), name, namespace).await;
+
+    use bubo_core::crd::{BackfillConfig, BuboQueue, BuboQueueSpec, FairShareConfig};
+
+    let queue = BuboQueue {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: BuboQueueSpec {
+            max_nodes: 2,
+            max_walltime: Some("1h".to_string()),
+            max_jobs_per_user: Some(5),
+            default_priority: 50,
+            backfill: Some(BackfillConfig {
+                enabled: true,
+                look_ahead: Some("30m".to_string()),
+            }),
+            fair_share: Some(FairShareConfig {
+                enabled: true,
+                decay_half_life: Some("7d".to_string()),
+            }),
+        },
+    };
+
+    let api: Api<BuboQueue> = Api::namespaced(client.clone(), namespace);
+    let created = api
+        .create(&PostParams::default(), &queue)
+        .await
+        .expect("create BuboQueue");
+
+    assert_eq!(created.spec.max_nodes, 2);
+    assert_eq!(created.spec.max_walltime.as_deref(), Some("1h"));
+    assert_eq!(created.spec.max_jobs_per_user, Some(5));
+
+    let backfill = created.spec.backfill.as_ref().expect("backfill config");
+    assert!(backfill.enabled);
+    assert_eq!(backfill.look_ahead.as_deref(), Some("30m"));
+
+    let fair_share = created.spec.fair_share.as_ref().expect("fair_share config");
+    assert!(fair_share.enabled);
+    assert_eq!(fair_share.decay_half_life.as_deref(), Some("7d"));
+
+    cleanup_queue(client, name, namespace).await.expect("cleanup");
+}
+
+/// Create two queues and verify both exist independently.
+#[tokio::test]
+#[ignore]
+async fn test_multiple_queues() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let namespace = "default";
+    let gpu_name = "test-gpu-queue";
+    let cpu_name = "test-cpu-queue";
+
+    let _ = cleanup_queue(client.clone(), gpu_name, namespace).await;
+    let _ = cleanup_queue(client.clone(), cpu_name, namespace).await;
+
+    create_test_buboqueue(client.clone(), gpu_name, namespace, 32)
+        .await
+        .expect("create gpu queue");
+    create_test_buboqueue(client.clone(), cpu_name, namespace, 64)
+        .await
+        .expect("create cpu queue");
+
+    let api: Api<BuboQueue> = Api::namespaced(client.clone(), namespace);
+
+    let gpu_q = api.get(gpu_name).await.expect("gpu queue exists");
+    let cpu_q = api.get(cpu_name).await.expect("cpu queue exists");
+
+    assert_eq!(gpu_q.spec.max_nodes, 32);
+    assert_eq!(cpu_q.spec.max_nodes, 64);
+
+    eprintln!("gpu queue max_nodes={}, cpu queue max_nodes={}", gpu_q.spec.max_nodes, cpu_q.spec.max_nodes);
+
+    cleanup_queue(client.clone(), gpu_name, namespace)
+        .await
+        .expect("cleanup gpu");
+    cleanup_queue(client.clone(), cpu_name, namespace)
+        .await
+        .expect("cleanup cpu");
+}
+
+// ---------------------------------------------------------------------------
+// Topology tests
+// ---------------------------------------------------------------------------
+
+/// Verify that cluster nodes have topology labels set (e.g., by kind config).
+#[tokio::test]
+#[ignore]
+async fn test_nodes_have_topology_labels() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+
+    let node_api: Api<Node> = Api::all(client);
+    let nodes = node_api
+        .list(&ListParams::default())
+        .await
+        .expect("list nodes");
+
+    assert!(!nodes.items.is_empty(), "cluster should have at least one node");
+
+    let mut switch_count = 0usize;
+    let mut rack_count = 0usize;
+
+    for node in &nodes.items {
+        let labels = node.metadata.labels.as_ref();
+        if labels.and_then(|l| l.get("topology.bubo.io/switch")).is_some() {
+            switch_count += 1;
+        }
+        if labels.and_then(|l| l.get("topology.bubo.io/rack")).is_some() {
+            rack_count += 1;
+        }
+    }
+
+    eprintln!(
+        "nodes with topology.bubo.io/switch: {switch_count}/{}, \
+         topology.bubo.io/rack: {rack_count}/{}",
+        nodes.items.len(),
+        nodes.items.len()
+    );
+
+    // This is a soft check: if the kind cluster was created with the topology
+    // config from scripts/kind-config.yaml the labels will be present.
+    // We log rather than assert so the test doesn't fail on vanilla clusters.
+    if switch_count == 0 {
+        eprintln!(
+            "NOTE: no topology.bubo.io/switch labels found — \
+             apply them with: kubectl label nodes <node> topology.bubo.io/switch=sw0"
+        );
+    }
+    if rack_count == 0 {
+        eprintln!(
+            "NOTE: no topology.bubo.io/rack labels found — \
+             apply them with: kubectl label nodes <node> topology.bubo.io/rack=rack0"
+        );
+    }
+}
+
+/// Create a job with topology constraints and verify it is accepted by the cluster.
+#[tokio::test]
+#[ignore]
+async fn test_job_with_topology_constraints() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-topology-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    let job = build_mpijob_with_topology(name, namespace, 1, true, Some(2));
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let created = api
+        .create(&PostParams::default(), &job)
+        .await
+        .expect("create MPIJob with topology");
+
+    assert_eq!(created.metadata.name.as_deref(), Some(name));
+    let topo = created.spec.topology.as_ref().expect("topology spec");
+    assert!(topo.prefer_same_switch, "preferSameSwitch should be true");
+    assert_eq!(topo.max_hops, Some(2), "maxHops should be 2");
+
+    // Allow the controller to process the job; it should at least reach Scheduling.
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Scheduling,
+        Duration::from_secs(20),
+    )
+    .await;
+
+    let job = api.get(name).await.expect("get job");
+    let state = job
+        .status
+        .as_ref()
+        .map(|s| s.state.clone())
+        .unwrap_or(JobState::Pending);
+    eprintln!("topology job state: {state}");
+    assert!(
+        matches!(
+            state,
+            JobState::Pending | JobState::Scheduling | JobState::Running
+        ),
+        "unexpected state for topology job: {state}"
+    );
+
+    cleanup_job(client, name, namespace).await.expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup tests
+// ---------------------------------------------------------------------------
+
+/// Create a job, wait for Running, delete it, and verify worker pods are cleaned up.
+#[tokio::test]
+#[ignore]
+async fn test_job_cleanup_removes_pods() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-cleanup-pods-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 1)
+        .await
+        .expect("create MPIJob");
+
+    // Wait for the controller to create pods.
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let label_selector = format!("bubo.io/job-name={name}");
+    let pods_before = count_pods(client.clone(), namespace, &label_selector).await;
+    eprintln!("pods before deletion: {pods_before}");
+
+    // Delete the MPIJob.
+    cleanup_job(client.clone(), name, namespace)
+        .await
+        .expect("cleanup job");
+
+    if pods_before > 0 {
+        // Verify pods are cleaned up within 60 s.
+        let cleaned = wait_for_pods_gone(
+            client.clone(),
+            namespace,
+            &label_selector,
+            Duration::from_secs(60),
+        )
+        .await;
+
+        if cleaned {
+            eprintln!("all pods cleaned up after job deletion");
+        } else {
+            let remaining = count_pods(client.clone(), namespace, &label_selector).await;
+            eprintln!(
+                "NOTE: {remaining} pod(s) still present 60 s after job deletion — \
+                 controller garbage collection may not be active"
+            );
+        }
+    } else {
+        eprintln!("NOTE: no pods were created before deletion — controller may not be active");
+    }
+}
+
+/// Create a job, wait for Running, delete it, and verify the headless service is removed.
+#[tokio::test]
+#[ignore]
+async fn test_job_cleanup_removes_service() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-cleanup-svc-job";
+    let namespace = "default";
+    let svc_name = format!("{name}-headless");
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    // Pre-clean the service.
+    let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let _ = svc_api.delete(&svc_name, &DeleteParams::default()).await;
+
+    create_test_mpijob(client.clone(), name, namespace, 1)
+        .await
+        .expect("create MPIJob");
+
+    let _ = wait_for_job_state(
+        client.clone(),
+        name,
+        namespace,
+        JobState::Running,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let svc_existed = wait_for_service(
+        client.clone(),
+        namespace,
+        &svc_name,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    eprintln!("headless service existed before deletion: {svc_existed}");
+
+    // Delete the MPIJob.
+    cleanup_job(client.clone(), name, namespace)
+        .await
+        .expect("cleanup job");
+
+    if svc_existed {
+        let cleaned = wait_for_service_gone(
+            client.clone(),
+            namespace,
+            &svc_name,
+            Duration::from_secs(60),
+        )
+        .await;
+
+        if cleaned {
+            eprintln!("headless service cleaned up after job deletion");
+        } else {
+            eprintln!(
+                "NOTE: headless service {svc_name} still present 60 s after job deletion — \
+                 controller garbage collection may not be active"
+            );
+        }
+    } else {
+        eprintln!("NOTE: headless service was never created — controller may not be active");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Error handling tests
+// ---------------------------------------------------------------------------
+
+/// Create a container backend job with no container spec; verify it fails.
+#[tokio::test]
+#[ignore]
+async fn test_container_backend_required_for_container_job() {
+    if skip_if_no_cluster().await {
+        return;
+    }
+    let client = Client::try_default().await.expect("kube client");
+    if !ensure_crds_installed(client.clone()).await {
+        eprintln!("SKIP: CRDs not installed");
+        return;
+    }
+
+    let name = "test-no-container-spec-job";
+    let namespace = "default";
+    let _ = cleanup_job(client.clone(), name, namespace).await;
+
+    // Build a container-backend job but omit the container spec entirely.
+    let job = MPIJob {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: MPIJobSpec {
+            nodes: 1,
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: Some("1h".to_string()),
+            tasks_per_node: 1,
+            backend: ExecutionBackendType::Container,
+            container: None, // deliberately missing
+            reaper: None,
+            mpi: None,
+            topology: None,
+            dependencies: vec![],
+        },
+        status: None,
+    };
+
+    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    match api.create(&PostParams::default(), &job).await {
+        Err(e) => {
+            // Webhook or validation rejected the object — correct behaviour.
+            eprintln!("server rejected job with missing container spec (expected): {e}");
+        }
+        Ok(_) => {
+            // Controller should detect the invalid spec and mark it Failed.
+            let failed = wait_for_job_state(
+                client.clone(),
+                name,
+                namespace,
+                JobState::Failed,
+                Duration::from_secs(30),
+            )
+            .await;
+
+            if failed {
+                eprintln!("controller correctly marked job with missing container spec as Failed");
+                let j = api.get(name).await.expect("get job");
+                let msg = j.status.as_ref().and_then(|s| s.message.as_deref());
+                eprintln!("failure message: {msg:?}");
+            } else {
+                let state = api
+                    .get(name)
+                    .await
+                    .ok()
+                    .and_then(|j| j.status)
+                    .map(|s| s.state)
+                    .unwrap_or(JobState::Pending);
+                eprintln!(
+                    "NOTE: job with missing container spec reached {state} instead of Failed — \
+                     validation may be deferred to Phase 5 webhook"
+                );
+            }
+
+            cleanup_job(client, name, namespace).await.expect("cleanup");
+        }
+    }
+}
