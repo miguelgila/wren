@@ -338,3 +338,130 @@ spec:
 - [Slurm documentation](https://slurm.schedmd.com/) — scheduling algorithms (backfill, fair-share)
 - [HPK](https://github.com/CARV-ICS-FORTH/HPK) — inverse approach (K8s on Slurm)
 - [Reaper](https://github.com/miguelgila/reaper) — bare-metal execution backend
+
+## Integration Test Plan
+
+### Overview
+
+Integration tests validate the full lifecycle of MPIJobs running against a real
+Kubernetes API. They are split into two tiers:
+
+- **Tier 1 — API-level tests** (run in CI): use a `kind` cluster to test CRD
+  installation, controller startup, and object lifecycle without running real MPI
+  workloads.
+- **Tier 2 — MPI workload tests** (manual / nightly): run actual multi-node MPI
+  hello-world jobs on a cluster with 2+ worker nodes.
+
+### Prerequisites
+
+- `kind` v0.20+ (or `k3d`)
+- `kubectl`
+- `docker` (for building controller image)
+- Rust toolchain (for building test binaries)
+
+### Tier 1: API-Level Integration Tests
+
+Located in `tests/integration/` at the workspace root.
+
+#### 1.1 CRD Installation
+- [ ] Generate CRD manifests from Rust types (`cargo run --bin crd-gen`)
+- [ ] Apply CRDs to a fresh kind cluster
+- [ ] Verify CRDs are registered: `kubectl get crd mpijobs.hpc.cscs.ch`
+- [ ] Verify CRDs have correct print columns and status subresource
+
+#### 1.2 Controller Startup
+- [ ] Build controller container image
+- [ ] Deploy controller to kind cluster (Deployment + RBAC)
+- [ ] Verify controller pod reaches `Running` state
+- [ ] Verify `/healthz` and `/readyz` endpoints respond 200
+- [ ] Verify `/metrics` endpoint returns Prometheus metrics
+
+#### 1.3 MPIJob Lifecycle (without real MPI)
+- [ ] Create an MPIJob with `backend: container` and a simple `busybox` image
+- [ ] Verify status transitions: `Pending` → `Scheduling` → `Running`
+- [ ] Verify headless Service is created (`<job>-workers`)
+- [ ] Verify hostfile ConfigMap is created with correct content
+- [ ] Verify worker Pods are created on correct nodes with correct labels
+- [ ] Verify launcher Pod is created with mpirun command
+- [ ] Verify `bubo status <job>` shows running state via CLI
+- [ ] Verify `bubo queue` lists the job
+- [ ] Cancel job with `bubo cancel <job>` and verify cleanup:
+  - [ ] Pods deleted
+  - [ ] Service deleted
+  - [ ] ConfigMap deleted
+  - [ ] Status updated to `Cancelled`
+
+#### 1.4 Error Handling
+- [ ] Submit MPIJob with 0 nodes → verify immediate `Failed` status
+- [ ] Submit MPIJob without container spec → verify `Failed` with validation message
+- [ ] Submit MPIJob requesting more nodes than available → verify stays in `Scheduling`
+- [ ] Submit MPIJob with walltime "1s" → verify `WalltimeExceeded` after timeout
+
+#### 1.5 BuboQueue
+- [ ] Create a BuboQueue CRD
+- [ ] Submit jobs to the queue
+- [ ] Verify queue depth metrics update
+
+### Tier 2: MPI Workload Tests
+
+#### 2.1 Simple MPI Hello World
+- [ ] Deploy a 2-node kind cluster with OpenMPI-capable images
+- [ ] Submit a 2-node MPI job that runs `mpi_hello_world`
+- [ ] Verify all ranks report output
+- [ ] Verify job transitions to `Succeeded`
+- [ ] Verify `bubo logs <job>` returns output from all ranks
+- [ ] Verify `bubo logs <job> --rank 0` filters correctly
+
+#### 2.2 Gang Scheduling Validation
+- [ ] Submit a job requiring 3 nodes on a 4-node cluster
+- [ ] Submit a second job requiring 3 nodes
+- [ ] Verify only first job is scheduled (gang: all-or-nothing)
+- [ ] Cancel first job → verify second job gets scheduled
+
+#### 2.3 Priority Scheduling
+- [ ] Submit low-priority job (priority 10)
+- [ ] Submit high-priority job (priority 100)
+- [ ] With limited resources, verify high-priority job is scheduled first
+
+### CI Pipeline Integration
+
+Add to `.github/workflows/integration.yml`:
+
+```yaml
+integration-tests:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: helm/kind-action@v1
+      with:
+        cluster_name: bubo-test
+        node_image: kindest/node:v1.31.0
+
+    - name: Build controller image
+      run: |
+        docker build -f docker/Dockerfile.controller -t bubo-controller:test .
+        kind load docker-image bubo-controller:test --name bubo-test
+
+    - name: Install CRDs
+      run: kubectl apply -f manifests/crds/
+
+    - name: Deploy controller
+      run: |
+        kubectl apply -f manifests/rbac/
+        kubectl apply -f manifests/deployment.yaml
+        kubectl wait --for=condition=available deployment/bubo-controller --timeout=60s
+
+    - name: Run integration tests
+      run: cargo test --test integration -- --test-threads=1
+```
+
+### Test Utilities
+
+Create a `tests/common/` module with helpers:
+- `setup_kind_cluster()` — ensure kind cluster is running
+- `install_crds()` — apply CRD manifests
+- `wait_for_status(job_name, expected_state, timeout)` — poll job status
+- `create_mpijob(spec)` — helper to create jobs from Rust code
+- `cleanup_job(job_name)` — delete job and all owned resources
+- `assert_pods_with_labels(labels, expected_count)` — verify pod creation
