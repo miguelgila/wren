@@ -1,0 +1,13 @@
+[package]
+name = "bubo-scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bubo-core = { path = "../bubo-core" }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
