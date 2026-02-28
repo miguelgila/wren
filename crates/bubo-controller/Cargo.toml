@@ -8,6 +8,10 @@ license.workspace = true
 name = "bubo-controller"
 path = "src/main.rs"
 
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
 [dependencies]
 bubo-core = { path = "../bubo-core" }
 bubo-scheduler = { path = "../bubo-scheduler" }

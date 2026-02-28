@@ -42,7 +42,7 @@ jobs:
           name: release-binaries
           path: |
             target/release/bubo-controller
-            target/release/bubo-cli
+            target/release/bubo
           retention-days: 1
 
   kind-integration:
