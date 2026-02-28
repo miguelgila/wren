@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::metrics::Metrics;
+use crate::reservation::ReservationManager;
 
 /// Context shared across reconciliation calls.
 pub struct ReconcilerContext {
@@ -17,6 +18,7 @@ pub struct ReconcilerContext {
     pub cluster_state: Arc<RwLock<ClusterState>>,
     pub backend: Arc<dyn ExecutionBackend>,
     pub metrics: Metrics,
+    pub reservations: RwLock<ReservationManager>,
 }
 
 /// Reconcile a single MPIJob. Called by the controller whenever the resource changes.
@@ -108,17 +110,31 @@ async fn handle_scheduling(
         cpu_per_node,
         mem_per_node,
         gpus_per_node,
+        spec.topology.as_ref(),
     );
     drop(cluster); // release read lock
 
+    let scheduling_start = std::time::Instant::now();
+
     match result {
         Ok(placement) => {
+            let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
+            ctx.metrics.record_scheduling_latency("success", scheduling_secs);
+            ctx.metrics.record_topology_score(placement.score);
+
             info!(
                 job = name,
                 nodes = ?placement.nodes,
                 score = placement.score,
                 "placement found"
             );
+
+            // Create reservation to prevent double-booking during launch
+            {
+                let mut reservations = ctx.reservations.write().await;
+                reservations.reserve(name, &placement, cpu_per_node, mem_per_node, gpus_per_node);
+                ctx.metrics.record_reservation_start();
+            }
 
             // Record allocations
             {
@@ -131,6 +147,13 @@ async fn handle_scheduling(
             // Launch via backend
             match ctx.backend.launch(name, namespace, spec, &placement).await {
                 Ok(launch_result) => {
+                    // Release reservation — resources are now committed
+                    {
+                        let mut reservations = ctx.reservations.write().await;
+                        reservations.release(name);
+                        ctx.metrics.record_reservation_end();
+                    }
+
                     info!(
                         job = name,
                         resources = ?launch_result.resource_ids,
@@ -162,6 +185,13 @@ async fn handle_scheduling(
                     ctx.metrics.scheduling_attempts.with_label_values(&["success"]).inc();
                 }
                 Err(e) => {
+                    // Release reservation on failure
+                    {
+                        let mut reservations = ctx.reservations.write().await;
+                        reservations.release(name);
+                        ctx.metrics.record_reservation_end();
+                    }
+
                     error!(job = name, error = %e, "failed to launch job");
                     // Release allocations
                     let mut cluster = ctx.cluster_state.write().await;
@@ -181,11 +211,15 @@ async fn handle_scheduling(
             }
         }
         Err(BuboError::NoFeasiblePlacement { .. }) => {
+            let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
+            ctx.metrics.record_scheduling_latency("no_placement", scheduling_secs);
             // Stay in Scheduling state — will retry on next reconcile
             info!(job = name, "no feasible placement, will retry");
             ctx.metrics.scheduling_attempts.with_label_values(&["no_placement"]).inc();
         }
         Err(e) => {
+            let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
+            ctx.metrics.record_scheduling_latency("error", scheduling_secs);
             error!(job = name, error = %e, "scheduling error");
             update_status(
                 name,

@@ -99,7 +99,7 @@ pub fn launcher_pod_name(job_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bubo_core::{MPISpec, TopologySpec};
+    use bubo_core::MPISpec;
 
     fn make_placement(nodes: &[&str]) -> Placement {
         Placement {

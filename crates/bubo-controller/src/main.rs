@@ -12,6 +12,7 @@ mod metrics;
 mod mpi;
 mod node_watcher;
 mod reconciler;
+mod reservation;
 
 use container::ContainerBackend;
 use metrics::Metrics;
@@ -48,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         cluster_state: cluster_state.clone(),
         backend,
         metrics: metrics.clone(),
+        reservations: RwLock::new(reservation::ReservationManager::default()),
     });
 
     // Start metrics server in background
