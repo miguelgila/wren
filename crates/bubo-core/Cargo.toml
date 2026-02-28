@@ -16,5 +16,9 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 
+[[bin]]
+name = "crd-gen"
+path = "src/bin/crd_gen.rs"
+
 [dev-dependencies]
 tokio = { workspace = true }

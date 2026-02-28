@@ -1,0 +1,13 @@
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: hello-mpi
+spec:
+  queue: default
+  nodes: 2
+  tasksPerNode: 1
+  walltime: "30m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["Hello from MPI rank"]
