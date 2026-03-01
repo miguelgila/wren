@@ -31,3 +31,5 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
+uuid = { workspace = true }
+hostname = { workspace = true }
