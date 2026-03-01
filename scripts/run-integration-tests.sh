@@ -1373,8 +1373,8 @@ main() {
     build_binary
     build_and_load_image
     install_crds
-    install_rbac
     ensure_namespace
+    install_rbac
     deploy_controller
     wait_for_controller
 
