@@ -226,40 +226,44 @@ spec:
 
 ## Development Milestones
 
-### Phase 1: Foundation (v0.1.0)
+### Phase 1: Foundation (v0.1.0) — COMPLETE
 **Goal:** A working gang scheduler that can run a simple multi-node MPI job.
 
-- [ ] Set up Cargo workspace with all crates
-- [ ] Define `MPIJob` CRD with `kube-derive`
-- [ ] Implement basic controller reconciliation loop (watch MPIJobs)
-- [ ] Implement node resource tracker (watch Nodes, track allocatable resources)
-- [ ] Implement FIFO gang scheduler (all-or-nothing placement)
-- [ ] Implement container backend:
-  - [ ] Headless Service creation for pod DNS discovery
-  - [ ] Hostfile ConfigMap generation
-  - [ ] Worker Pod creation with shared SSH keys
-  - [ ] Launcher Pod that waits for workers, then runs mpirun
-- [ ] Implement walltime enforcement (SIGTERM after walltime, SIGKILL after grace)
-- [ ] Basic status reporting on the MPIJob status subresource
-- [ ] Integration test: 2-node MPI hello world on a kind cluster with OpenMPI
-- [ ] Dockerfile for the controller
-- [ ] Example manifests
+- [x] Set up Cargo workspace with all crates
+- [x] Define `BuboJob` CRD with `kube-derive` (originally MPIJob, renamed)
+- [x] Implement basic controller reconciliation loop (watch BuboJobs)
+- [x] Implement node resource tracker (watch Nodes, track allocatable resources)
+- [x] Implement FIFO gang scheduler (all-or-nothing placement)
+- [x] Implement container backend:
+  - [x] Headless Service creation for pod DNS discovery
+  - [x] Hostfile ConfigMap generation
+  - [x] Worker Pod creation with shared SSH keys
+  - [x] Launcher Pod that waits for workers, then runs mpirun
+  - [x] Simple mode (no launcher) for non-MPI jobs — runs user command directly
+- [x] Implement walltime enforcement (SIGTERM after walltime, SIGKILL after grace)
+- [x] Basic status reporting on the BuboJob status subresource
+- [x] Pod watcher — `.watches()` on pods with `app.kubernetes.io/managed-by=bubo` for fast reconciliation
+- [x] Completed pod preservation with 24h TTL for log retrieval
+- [x] AlreadyExists (HTTP 409) tolerance on resource creation
+- [x] Integration tests: shell smoke tests on kind cluster (10 tests)
+- [x] Dockerfile for the controller
+- [x] Example manifests (hello-world, multi-node)
 
-### Phase 2: Smart Scheduling (v0.2.0)
+### Phase 2: Smart Scheduling (v0.2.0) — COMPLETE
 **Goal:** Topology-aware placement and priority queues.
 
-- [ ] Define `BuboQueue` CRD
-- [ ] Implement priority queue with multiple queues
-- [ ] Implement topology-aware node scoring:
-  - [ ] Parse node labels for switch group / rack / zone
-  - [ ] Score candidate node sets by network proximity
-  - [ ] Support `maxHops` and `preferSameSwitch` constraints
-- [ ] Implement resource reservation (prevent double-booking during bind)
-- [ ] Add Prometheus metrics:
-  - [ ] Queue depth, wait time, scheduling latency
-  - [ ] Node utilization, job completion rate
-  - [ ] Gang scheduling success/failure ratio
-- [ ] `bubo-cli` basics: `submit`, `queue`, `cancel`, `status`
+- [x] Define `BuboQueue` CRD
+- [x] Implement priority queue with multiple queues
+- [x] Implement topology-aware node scoring:
+  - [x] Parse node labels for switch group / rack / zone
+  - [x] Score candidate node sets by network proximity
+  - [x] Support `maxHops` and `preferSameSwitch` constraints
+- [x] Implement resource reservation (prevent double-booking during bind)
+- [x] Add Prometheus metrics:
+  - [x] Queue depth, wait time, scheduling latency
+  - [x] Node utilization, job completion rate
+  - [x] Gang scheduling success/failure ratio
+- [x] `bubo-cli` basics: `submit`, `queue`, `cancel`, `status`, `logs`
 
 ### Phase 3: Reaper Integration (v0.3.0)
 **Goal:** Bare-metal execution backend via Reaper.
@@ -272,32 +276,126 @@ spec:
 - [ ] Shared resource tracking between container and reaper backends
 - [ ] Integration test with Reaper
 
-### Phase 4: Advanced Scheduling (v0.4.0)
+### Phase 4: Advanced Scheduling (v0.4.0) — MOSTLY COMPLETE
 **Goal:** Slurm-level scheduling sophistication.
 
-- [ ] Backfill scheduler:
-  - [ ] Project when blocked high-priority jobs will start
-  - [ ] Allow smaller/shorter jobs to backfill without delaying them
-- [ ] Fair-share scheduling:
-  - [ ] Track per-project/user node-hour usage
-  - [ ] Decay historical usage over configurable half-life
-  - [ ] Adjust effective priority based on fair-share factor
-- [ ] Job dependencies (`afterOk`, `afterAny`, `afterNotOk`)
-- [ ] Job arrays (map to indexed jobs)
+- [x] Backfill scheduler (`bubo-scheduler/src/backfill.rs`):
+  - [x] Build resource timelines from running jobs
+  - [x] Compute reservation times for blocked high-priority jobs
+  - [x] Allow smaller/shorter jobs to backfill without delaying reservations
+  - [x] Shadow allocation prevents double-booking during scheduling pass
+  - [x] Look-ahead window for future resource projection
+- [x] Fair-share scheduling (`bubo-scheduler/src/fair_share.rs`):
+  - [x] Track per-project/user node-hour usage (node-seconds, GPU-seconds)
+  - [x] Exponential decay of historical usage with configurable half-life
+  - [x] Multi-factor effective priority (age, size, fair-share weights)
+  - [x] Fair-share factor computation (-1 to +1 range)
+- [x] Job dependencies (`bubo-scheduler/src/dependencies.rs`):
+  - [x] `AfterOk`, `AfterAny`, `AfterNotOk` dependency types
+  - [x] Cycle detection using Kahn's algorithm
+  - [x] Exposed in BuboJobSpec CRD (`dependencies` field)
+- [x] Job arrays (`bubo-scheduler/src/dependencies.rs`):
+  - [x] `JobArraySpec` with parsing (`0-99`, `1-10:2`, `0-99%5`)
+  - [x] Concurrency limiting and step support
+  - [ ] **Not yet exposed in BuboJobSpec CRD** — scheduler code only
 - [ ] Preemption support (gang preemption — evict entire jobs)
-- [ ] Accounting and usage reports
+- [ ] Accounting and usage reports (API endpoint for querying usage)
 
-### Phase 5: Production Hardening (v0.5.0)
+**Note:** Fair-share and backfill are implemented as pure scheduler algorithms
+but are not yet wired into the controller reconciliation loop. The scheduler
+crate is intentionally kept free of K8s dependencies for testability.
+
+### Phase 5: Multi-User & Multi-Tenancy (v0.5.0)
+**Goal:** Production multi-user support with identity, quotas, and accounting.
+
+Currently Bubo has **no user identity tracking** — every job is anonymous. This
+phase adds the plumbing to make it a proper multi-tenant HPC scheduler.
+
+#### 5.1 User Identity
+
+Kubernetes doesn't natively embed "who created this resource" on the object.
+The recommended approach is a **validating/mutating admission webhook** that
+stamps `bubo.io/user` from the K8s API request's `UserInfo`:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Annotation** (`bubo.io/user`) | Simple, CLI sets it | Easy to forge |
+| **Namespace = tenant** | K8s RBAC enforces it | One namespace per user is rigid |
+| **ServiceAccount name** | Already in request context | Requires webhook to extract |
+| **Webhook + UserInfo** | Tamper-proof | Requires admission webhook |
+
+**Chosen approach:** Webhook stamps `bubo.io/user` from `UserInfo`, CLI sets it
+as a convenience annotation, webhook overrides if present. This mirrors how
+Slurm's `sbatch` knows who you are.
+
+- [ ] Add `user` and `project` fields to `BuboJobSpec`:
+  ```yaml
+  spec:
+    user: "miguel"         # stamped by webhook, not user-settable
+    project: "climate-sim" # optional, for fair-share grouping
+    queue: "gpu"
+  ```
+- [ ] Implement mutating webhook to stamp `user` from `UserInfo`
+- [ ] CLI sends `bubo.io/user` annotation; webhook overrides with real identity
+
+#### 5.2 Per-User Limits & Quotas
+
+- [ ] Enforce `max_jobs_per_user` in reconciler (field already exists in `BuboQueueSpec`)
+- [ ] Add per-user/project resource quotas to `BuboQueue`:
+  ```yaml
+  spec:
+    quotas:
+      - user: "miguel"
+        maxNodes: 32
+        maxGpuHours: 1000    # per month
+      - project: "climate-sim"
+        maxNodes: 64
+  ```
+- [ ] Burst allowances (use more when cluster is idle)
+- [ ] Max concurrent nodes per user enforcement
+
+#### 5.3 Fair-Share Wiring
+
+The `FairShareManager` exists in `bubo-scheduler` but isn't connected to the
+controller yet. This sub-phase wires it up:
+
+- [ ] Feed job completion data into `FairShareManager` (record `node_hours = nodes * walltime`)
+- [ ] Key usage by `(user, project)` instead of just namespace
+- [ ] Adjust effective priority in the scheduling loop using fair-share factor
+- [ ] Expose usage summaries via metrics endpoint (`/metrics`)
+
+#### 5.4 Accounting & Reports
+
+- [ ] Persist usage records (currently in-memory only)
+- [ ] Add `bubo accounting` CLI command (like Slurm's `sacct`)
+- [ ] Per-user/project usage reports (node-hours, GPU-hours, job count)
+- [ ] Expose usage via Prometheus metrics for Grafana dashboards
+
+#### Architecture Flow
+
+The beauty of the current design is that **scheduling stays pure** (no K8s deps
+in `bubo-scheduler`). Multi-user support flows cleanly:
+
+```
+Webhook stamps user → Reconciler reads user →
+  FairShareManager adjusts priority →
+    GangScheduler sees adjusted priority → placement
+```
+
+The scheduler crate stays clean — it just sees priority numbers. The controller
+crate handles user identity plumbing.
+
+### Phase 6: Production Hardening (v0.6.0)
 **Goal:** Ready for production HPC workloads.
 
-- [ ] Leader election for HA controller deployment
+- [x] Leader election for HA controller deployment
 - [ ] Comprehensive error handling and retry logic
 - [ ] Graceful degradation when nodes disappear mid-job
-- [ ] Webhook validation for MPIJob and BuboQueue CRDs
+- [x] Webhook validation for BuboJob and BuboQueue CRDs (scaffolded)
 - [ ] Helm chart for deployment
 - [ ] Comprehensive documentation
 - [ ] Performance benchmarking (scheduling latency at scale)
-- [ ] CI/CD pipeline (GitHub Actions: test, lint, build, container image)
+- [x] CI/CD pipeline (GitHub Actions: test, lint, build, container image)
 
 ## Coding Conventions
 
