@@ -1,7 +1,7 @@
 # Multi-node job: 2 workers + 1 launcher.
 # Demonstrates gang scheduling — all nodes must be available.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: multi-node-demo
 spec:

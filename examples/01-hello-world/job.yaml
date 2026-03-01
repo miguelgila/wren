@@ -1,13 +1,13 @@
-# Simplest possible Bubo job: single-node echo.
+# Simplest possible Wren job: single-node echo.
 # This is the "hello world" — verifies the controller is working.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
-  name: hello-bubo
+  name: hello-wren
 spec:
   nodes: 1
   walltime: "5m"
   container:
     image: busybox:latest
     command: ["echo"]
-    args: ["Hello from Bubo!"]
+    args: ["Hello from Wren!"]

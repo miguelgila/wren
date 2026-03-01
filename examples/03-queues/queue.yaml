@@ -1,6 +1,6 @@
 # Define a queue with resource limits and policies.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboQueue
+kind: WrenQueue
 metadata:
   name: batch
 spec:

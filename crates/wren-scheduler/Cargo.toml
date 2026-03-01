@@ -1,0 +1,13 @@
+[package]
+name = "wren-scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wren-core = { path = "../wren-core" }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -237,78 +237,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bubo-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bubo-core",
- "chrono",
- "clap",
- "futures",
- "k8s-openapi",
- "kube",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "bubo-controller"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bubo-core",
- "bubo-scheduler",
- "chrono",
- "futures",
- "hostname",
- "k8s-openapi",
- "kube",
- "kube-runtime",
- "prometheus",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "bubo-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "k8s-openapi",
- "kube",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "bubo-scheduler"
-version = "0.1.0"
-dependencies = [
- "bubo-core",
- "chrono",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3121,6 +3049,78 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "wren-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wren-core",
+]
+
+[[package]]
+name = "wren-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "hostname",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "prometheus",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wren-core",
+ "wren-scheduler",
+]
+
+[[package]]
+name = "wren-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "k8s-openapi",
+ "kube",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "wren-scheduler"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "tokio",
+ "tracing",
+ "wren-core",
 ]
 
 [[package]]

@@ -1,21 +1,21 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: bubo-controller
-  namespace: bubo-system
+  name: wren-controller
+  namespace: wren-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: bubo-controller
+  name: wren-controller
 rules:
-  # BuboJob CRD access
+  # WrenJob CRD access
   - apiGroups: ["hpc.cscs.ch"]
-    resources: ["bubojobs", "bubojobs/status"]
+    resources: ["wrenjobs", "wrenjobs/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # BuboQueue CRD access
+  # WrenQueue CRD access
   - apiGroups: ["hpc.cscs.ch"]
-    resources: ["buboqueues"]
+    resources: ["wrenqueues"]
     verbs: ["get", "list", "watch"]
   # Pod management for MPI workers/launcher
   - apiGroups: [""]
@@ -49,12 +49,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: bubo-controller
+  name: wren-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: bubo-controller
+  name: wren-controller
 subjects:
   - kind: ServiceAccount
-    name: bubo-controller
-    namespace: bubo-system
+    name: wren-controller
+    namespace: wren-system

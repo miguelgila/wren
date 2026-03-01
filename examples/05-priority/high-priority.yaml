@@ -1,6 +1,6 @@
 # High-priority urgent job — scheduled before lower-priority jobs.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: high-priority-job
 spec:

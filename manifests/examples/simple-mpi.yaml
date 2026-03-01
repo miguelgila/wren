@@ -1,5 +1,5 @@
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: hello-mpi
 spec:

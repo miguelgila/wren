@@ -1,6 +1,6 @@
 # Submit a job to the "batch" queue.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: batch-job
 spec:

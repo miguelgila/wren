@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-integration-tests.sh — Comprehensive integration test runner for Bubo HPC scheduler.
+# run-integration-tests.sh — Comprehensive integration test runner for Wren HPC scheduler.
 #
 # Usage:
 #   ./scripts/run-integration-tests.sh                     # Full run (build + kind + all tests)
@@ -9,8 +9,8 @@
 #
 # Environment variables (override defaults):
 #   IMAGE_TAG=<tag>          — controller image tag (default: latest)
-#   CLUSTER_NAME=<name>      — kind cluster name (default: bubo-test)
-#   NAMESPACE=<ns>           — controller namespace (default: bubo-system)
+#   CLUSTER_NAME=<name>      — kind cluster name (default: wren-test)
+#   NAMESPACE=<ns>           — controller namespace (default: wren-system)
 #   TEST_NAMESPACE=<ns>      — namespace for test jobs (default: default)
 #   CONTROLLER_TIMEOUT=<s>   — seconds to wait for controller ready (default: 120)
 #   JOB_TIMEOUT=<s>          — seconds to wait for job status (default: 90)
@@ -21,15 +21,15 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration (env var defaults)
 # ---------------------------------------------------------------------------
-CLUSTER_NAME="${CLUSTER_NAME:-bubo-test}"
-NAMESPACE="${NAMESPACE:-bubo-system}"
+CLUSTER_NAME="${CLUSTER_NAME:-wren-test}"
+NAMESPACE="${NAMESPACE:-wren-system}"
 TEST_NAMESPACE="${TEST_NAMESPACE:-default}"
-IMAGE_NAME="bubo-controller"
+IMAGE_NAME="wren-controller"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 IMAGE_REF="${IMAGE_NAME}:${IMAGE_TAG}"
 CONTROLLER_TIMEOUT="${CONTROLLER_TIMEOUT:-120}"
 JOB_TIMEOUT="${JOB_TIMEOUT:-90}"
-LOG_DIR="/tmp/bubo-integration-logs"
+LOG_DIR="/tmp/wren-integration-logs"
 LOG_FILE="${LOG_DIR}/integration-test.log"
 TESTS="${TESTS:-all}"
 
@@ -38,8 +38,8 @@ MANIFEST_DIR="${REPO_ROOT}/manifests"
 DOCKERFILE="${REPO_ROOT}/docker/Dockerfile.controller"
 KIND_CONFIG="${REPO_ROOT}/kind-config.yaml"
 
-# Pod label key used by the controller to associate pods with an BuboJob.
-BUBO_JOB_LABEL="bubo.io/job-name"
+# Pod label key used by the controller to associate pods with an WrenJob.
+WREN_JOB_LABEL="wren.io/job-name"
 
 # ---------------------------------------------------------------------------
 # Flags (set via CLI arguments, matching Reaper's interface)
@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --verbose     Also print verbose output to stdout"
       echo ""
       echo "Environment variables:"
-      echo "  CLUSTER_NAME   Kind cluster name (default: bubo-test)"
+      echo "  CLUSTER_NAME   Kind cluster name (default: wren-test)"
       echo "  IMAGE_TAG      Controller image tag (default: latest)"
       echo "  TESTS          Test suites: rust|shell|all (default: all)"
       echo "  JOB_TIMEOUT    Seconds to wait for job status (default: 90)"
@@ -262,28 +262,28 @@ collect_logs() {
 
     # Controller logs
     kubectl logs -n "${NAMESPACE}" \
-        -l app.kubernetes.io/name=bubo-controller \
+        -l app.kubernetes.io/name=wren-controller \
         --all-containers \
         --tail=-1 \
         2>/dev/null > "${LOG_DIR}/controller.log" || true
 
-    # Events in bubo-system namespace
+    # Events in wren-system namespace
     kubectl get events -n "${NAMESPACE}" \
         --sort-by='.lastTimestamp' \
-        2>/dev/null > "${LOG_DIR}/bubo-system-events.log" || true
+        2>/dev/null > "${LOG_DIR}/wren-system-events.log" || true
 
     # Events in test namespace
     kubectl get events -n "${TEST_NAMESPACE}" \
         --sort-by='.lastTimestamp' \
         2>/dev/null > "${LOG_DIR}/test-namespace-events.log" || true
 
-    # BuboJob state
-    kubectl get bubojobs -n "${TEST_NAMESPACE}" -o yaml \
-        2>/dev/null > "${LOG_DIR}/bubojobs.yaml" || true
+    # WrenJob state
+    kubectl get wrenjobs -n "${TEST_NAMESPACE}" -o yaml \
+        2>/dev/null > "${LOG_DIR}/wrenjobs.yaml" || true
 
-    # BuboQueue state
-    kubectl get buboqueues -A -o yaml \
-        2>/dev/null > "${LOG_DIR}/buboqueues.yaml" || true
+    # WrenQueue state
+    kubectl get wrenqueues -A -o yaml \
+        2>/dev/null > "${LOG_DIR}/wrenqueues.yaml" || true
 
     # All pods with wide output
     kubectl get pods -A -o wide \
@@ -320,8 +320,8 @@ setup_cluster() {
     kubectl cluster-info --context "kind-${CLUSTER_NAME}"
     log "Nodes and topology labels:"
     kubectl get nodes \
-        -L topology.bubo.io/switch \
-        -L topology.bubo.io/rack \
+        -L topology.wren.io/switch \
+        -L topology.wren.io/rack \
         -L topology.kubernetes.io/zone
     success "Cluster is reachable"
 }
@@ -335,10 +335,10 @@ build_binary() {
         log "Skipping cargo build (--skip-cargo)"
         return
     fi
-    log "Running: cargo build --release -p bubo-controller"
-    cargo build --release -p bubo-controller \
+    log "Running: cargo build --release -p wren-controller"
+    cargo build --release -p wren-controller \
         --manifest-path "${REPO_ROOT}/Cargo.toml"
-    success "Binary built: target/release/bubo-controller"
+    success "Binary built: target/release/wren-controller"
 }
 
 # ---------------------------------------------------------------------------
@@ -395,11 +395,11 @@ install_crds() {
     # Wait for CRDs to become established before proceeding
     log "Waiting for CRDs to be established ..."
     kubectl wait --for=condition=Established \
-        crd/bubojobs.hpc.cscs.ch \
+        crd/wrenjobs.hpc.cscs.ch \
         --timeout=30s
     kubectl wait --for=condition=Established \
-        crd/buboqueues.hpc.cscs.ch \
-        --timeout=30s 2>/dev/null || warn "buboqueues CRD not found — skipping"
+        crd/wrenqueues.hpc.cscs.ch \
+        --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
 
     success "CRDs installed (${crd_count} files)"
 }
@@ -451,7 +451,7 @@ deploy_controller() {
 
     # Apply manifest then patch imagePullPolicy to Never (required for kind)
     kubectl apply -f "${deploy_file}"
-    kubectl patch deployment bubo-controller \
+    kubectl patch deployment wren-controller \
         -n "${NAMESPACE}" \
         --type='json' \
         -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]' \
@@ -466,28 +466,28 @@ deploy_controller() {
 wait_for_controller() {
     section "Waiting for controller to become ready (timeout: ${CONTROLLER_TIMEOUT}s)"
 
-    if ! kubectl wait deployment/bubo-controller \
+    if ! kubectl wait deployment/wren-controller \
         -n "${NAMESPACE}" \
         --for=condition=Available \
         --timeout="${CONTROLLER_TIMEOUT}s"; then
         error "Controller did not become ready within ${CONTROLLER_TIMEOUT}s"
         error "Controller pod status:"
-        kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/name=bubo-controller || true
+        kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/name=wren-controller || true
         error "Controller logs:"
         kubectl logs -n "${NAMESPACE}" \
-            -l app.kubernetes.io/name=bubo-controller \
+            -l app.kubernetes.io/name=wren-controller \
             --tail=50 || true
         exit 1
     fi
 
     success "Controller is ready"
-    kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/name=bubo-controller
+    kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/name=wren-controller
 }
 
 # ---------------------------------------------------------------------------
 # Rust integration tests
 #
-# These are the #[ignore]-gated Rust tests inside bubo-controller's
+# These are the #[ignore]-gated Rust tests inside wren-controller's
 # tests/integration/ directory. They expect a live cluster to be available
 # via KUBECONFIG and run with --test-threads=1 to avoid race conditions.
 # ---------------------------------------------------------------------------
@@ -499,11 +499,11 @@ run_rust_tests() {
         return
     fi
 
-    log "Command: cargo test -p bubo-controller --test integration -- --ignored --test-threads=1"
+    log "Command: cargo test -p wren-controller --test integration -- --ignored --test-threads=1"
 
     local rust_log="${LOG_DIR}/rust-integration-tests.log"
     if cargo test \
-            -p bubo-controller \
+            -p wren-controller \
             --test integration \
             -- \
             --ignored \
@@ -519,12 +519,12 @@ run_rust_tests() {
 # ---------------------------------------------------------------------------
 # Shell smoke tests
 #
-# These tests exercise the Bubo CRDs and controller from the outside using
+# These tests exercise the Wren CRDs and controller from the outside using
 # kubectl. They are self-contained and produce pass/fail records for the
 # final summary. Each test cleans up after itself.
 # ---------------------------------------------------------------------------
 
-# Helper: wait for an BuboJob to reach a target state.
+# Helper: wait for an WrenJob to reach a target state.
 # Usage: wait_for_job_state <job-name> <target-states-pipe-separated> <timeout-s>
 # Returns 0 if the state is reached, 1 on timeout.
 wait_for_job_state() {
@@ -535,11 +535,11 @@ wait_for_job_state() {
     local state=""
 
     while true; do
-        state=$(kubectl get bubojob "${job_name}" \
+        state=$(kubectl get wrenjob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.status.state}' 2>/dev/null || echo "")
 
-        log "  BuboJob '${job_name}' state: '${state:-<empty>}'"
+        log "  WrenJob '${job_name}' state: '${state:-<empty>}'"
 
         if [[ "$state" =~ ^(${target_pattern})$ ]]; then
             log "  Reached expected state: ${state}"
@@ -555,10 +555,10 @@ wait_for_job_state() {
     done
 }
 
-# Helper: delete an BuboJob quietly, ignore not-found errors.
+# Helper: delete an WrenJob quietly, ignore not-found errors.
 delete_job() {
     local job_name="$1"
-    kubectl delete bubojob "${job_name}" \
+    kubectl delete wrenjob "${job_name}" \
         -n "${TEST_NAMESPACE}" \
         --ignore-not-found \
         --timeout=60s 2>/dev/null || true
@@ -572,7 +572,7 @@ _smoke_test_multinode_job() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -583,15 +583,15 @@ spec:
   walltime: "5m"
   container:
     image: busybox:latest
-    command: ["sh", "-c", "echo hello-bubo && sleep 10"]
+    command: ["sh", "-c", "echo hello-wren && sleep 10"]
 EOF
 )"
-    log "Submitting 2-node BuboJob '${job_name}' ..."
+    log "Submitting 2-node WrenJob '${job_name}' ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Expect the job to leave Pending and reach Scheduling, Running, or Succeeded
     if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
-        kubectl describe bubojob "${job_name}" -n "${TEST_NAMESPACE}" || true
+        kubectl describe wrenjob "${job_name}" -n "${TEST_NAMESPACE}" || true
         delete_job "${job_name}"
         return 1
     fi
@@ -615,8 +615,8 @@ _smoke_test_topology_labels() {
 
     # Each worker node must have all three topology keys
     local expected_keys=(
-        "topology.bubo.io/switch"
-        "topology.bubo.io/rack"
+        "topology.wren.io/switch"
+        "topology.wren.io/rack"
         "topology.kubernetes.io/zone"
     )
 
@@ -652,10 +652,10 @@ _smoke_test_topology_labels() {
     # Verify the expected topology groups are present
     local switch0_count switch1_count
     switch0_count=$(kubectl get nodes \
-        -l "topology.bubo.io/switch=switch-0" \
+        -l "topology.wren.io/switch=switch-0" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
     switch1_count=$(kubectl get nodes \
-        -l "topology.bubo.io/switch=switch-1" \
+        -l "topology.wren.io/switch=switch-1" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [[ "$switch0_count" -ne 2 ]]; then
@@ -680,14 +680,14 @@ smoke_test_topology_labels() {
 }
 
 # ---------------------------------------------------------------------------
-# Smoke test 3: Queue creation — create a BuboQueue and verify it is accepted.
+# Smoke test 3: Queue creation — create a WrenQueue and verify it is accepted.
 # ---------------------------------------------------------------------------
 _smoke_test_queue_creation() {
     local queue_name="smoke-queue"
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboQueue
+kind: WrenQueue
 metadata:
   name: ${queue_name}
   namespace: ${TEST_NAMESPACE}
@@ -704,31 +704,31 @@ spec:
     decayHalfLife: "7d"
 EOF
 )"
-    log "Creating BuboQueue '${queue_name}' ..."
+    log "Creating WrenQueue '${queue_name}' ..."
     if ! echo "${manifest}" | kubectl apply -f - 2>/dev/null; then
-        warn "BuboQueue CRD may not be installed — skipping queue test"
+        warn "WrenQueue CRD may not be installed — skipping queue test"
         return 0
     fi
 
     # Verify the queue is retrievable
     local retrieved
-    retrieved=$(kubectl get buboqueue "${queue_name}" \
+    retrieved=$(kubectl get wrenqueue "${queue_name}" \
         -n "${TEST_NAMESPACE}" \
         -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 
     if [[ "$retrieved" != "${queue_name}" ]]; then
-        error "BuboQueue '${queue_name}' was not found after creation"
-        kubectl delete buboqueue "${queue_name}" -n "${TEST_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+        error "WrenQueue '${queue_name}' was not found after creation"
+        kubectl delete wrenqueue "${queue_name}" -n "${TEST_NAMESPACE}" --ignore-not-found 2>/dev/null || true
         return 1
     fi
 
-    log "BuboQueue '${queue_name}' created and verified"
-    kubectl delete buboqueue "${queue_name}" -n "${TEST_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+    log "WrenQueue '${queue_name}' created and verified"
+    kubectl delete wrenqueue "${queue_name}" -n "${TEST_NAMESPACE}" --ignore-not-found 2>/dev/null || true
     return 0
 }
 
 smoke_test_queue_creation() {
-    run_test "BuboQueue creation" _smoke_test_queue_creation
+    run_test "WrenQueue creation" _smoke_test_queue_creation
 }
 
 # ---------------------------------------------------------------------------
@@ -740,7 +740,7 @@ _smoke_test_invalid_job() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -754,7 +754,7 @@ spec:
     command: ["echo", "this-should-not-run"]
 EOF
 )"
-    log "Submitting invalid BuboJob (nodes=0) '${job_name}' ..."
+    log "Submitting invalid WrenJob (nodes=0) '${job_name}' ..."
 
     # The API server may reject it via webhook, or the controller may set a
     # Failed status. Both outcomes are acceptable.
@@ -767,7 +767,7 @@ EOF
     local deadline=$(( $(date +%s) + 30 ))
     local state=""
     while true; do
-        state=$(kubectl get bubojob "${job_name}" \
+        state=$(kubectl get wrenjob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.status.state}' 2>/dev/null || echo "")
         log "  Invalid job state: '${state:-<empty>}'"
@@ -805,7 +805,7 @@ _smoke_test_walltime_job() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -819,7 +819,7 @@ spec:
     command: ["sh", "-c", "echo starting && sleep 300"]
 EOF
 )"
-    log "Submitting short-walltime BuboJob (5s) '${job_name}' ..."
+    log "Submitting short-walltime WrenJob (5s) '${job_name}' ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Allow generous time: job must start, run, then be killed by walltime enforcement
@@ -828,7 +828,7 @@ EOF
     local state=""
 
     while true; do
-        state=$(kubectl get bubojob "${job_name}" \
+        state=$(kubectl get wrenjob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.status.state}' 2>/dev/null || echo "")
         log "  Walltime job state: '${state:-<empty>}'"
@@ -842,7 +842,7 @@ EOF
         # If the controller fails the job for walltime via Failed state, also accept
         if [[ "$state" == "Failed" ]]; then
             local reason
-            reason=$(kubectl get bubojob "${job_name}" \
+            reason=$(kubectl get wrenjob "${job_name}" \
                 -n "${TEST_NAMESPACE}" \
                 -o jsonpath='{.status.reason}' 2>/dev/null || echo "")
             if [[ "$reason" == *"walltime"* || "$reason" == *"Walltime"* ]]; then
@@ -881,11 +881,11 @@ _smoke_test_concurrent_jobs() {
     local job_names=("smoke-concurrent-1" "smoke-concurrent-2" "smoke-concurrent-3")
     local errors=0
 
-    log "Submitting 3 BuboJobs concurrently ..."
+    log "Submitting 3 WrenJobs concurrently ..."
     for job_name in "${job_names[@]}"; do
         cat <<EOF | kubectl apply -f - &
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -907,13 +907,13 @@ EOF
     # Verify all 3 jobs are tracked
     for job_name in "${job_names[@]}"; do
         local retrieved
-        retrieved=$(kubectl get bubojob "${job_name}" \
+        retrieved=$(kubectl get wrenjob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 
         if [[ "$retrieved" == "${job_name}" ]]; then
             local state
-            state=$(kubectl get bubojob "${job_name}" \
+            state=$(kubectl get wrenjob "${job_name}" \
                 -n "${TEST_NAMESPACE}" \
                 -o jsonpath='{.status.state}' 2>/dev/null || echo "<no state>")
             log "  ${job_name}: found, state='${state}'"
@@ -937,14 +937,14 @@ smoke_test_concurrent_jobs() {
 
 # ---------------------------------------------------------------------------
 # Smoke test 7: Pod label selector — submit a job, wait for pods, verify
-# the pods carry the correct bubo.io/job-name label.
+# the pods carry the correct wren.io/job-name label.
 # ---------------------------------------------------------------------------
 _smoke_test_pod_labels() {
     local job_name="smoke-pod-labels"
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -958,7 +958,7 @@ spec:
     command: ["sh", "-c", "echo hello && sleep 60"]
 EOF
 )"
-    log "Submitting BuboJob '${job_name}' to check pod labels ..."
+    log "Submitting WrenJob '${job_name}' to check pod labels ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for the job to leave Pending
@@ -972,22 +972,22 @@ EOF
     local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
     local pod_count=0
 
-    log "Waiting for pods with label '${BUBO_JOB_LABEL}=${job_name}' ..."
+    log "Waiting for pods with label '${WREN_JOB_LABEL}=${job_name}' ..."
     while true; do
         pod_count=$(kubectl get pods -n "${TEST_NAMESPACE}" \
-            -l "${BUBO_JOB_LABEL}=${job_name}" \
+            -l "${WREN_JOB_LABEL}=${job_name}" \
             --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
         if [[ "$pod_count" -gt 0 ]]; then
-            success "Found ${pod_count} pod(s) with label '${BUBO_JOB_LABEL}=${job_name}'"
+            success "Found ${pod_count} pod(s) with label '${WREN_JOB_LABEL}=${job_name}'"
             kubectl get pods -n "${TEST_NAMESPACE}" \
-                -l "${BUBO_JOB_LABEL}=${job_name}"
+                -l "${WREN_JOB_LABEL}=${job_name}"
             delete_job "${job_name}"
             return 0
         fi
 
         if [[ "$(date +%s)" -ge "$deadline" ]]; then
-            warn "No pods found with label '${BUBO_JOB_LABEL}=${job_name}'"
+            warn "No pods found with label '${WREN_JOB_LABEL}=${job_name}'"
             warn "Controller may use a different label key — listing all pods in ${TEST_NAMESPACE}:"
             kubectl get pods -n "${TEST_NAMESPACE}" || true
             # Not a hard failure: pod labels are an implementation detail still in flux.
@@ -1000,7 +1000,7 @@ EOF
 }
 
 smoke_test_pod_labels() {
-    run_test "pod label selector (bubo.io/job-name)" _smoke_test_pod_labels
+    run_test "pod label selector (wren.io/job-name)" _smoke_test_pod_labels
 }
 
 # ---------------------------------------------------------------------------
@@ -1011,7 +1011,7 @@ _smoke_test_headless_service() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -1025,7 +1025,7 @@ spec:
     command: ["sh", "-c", "echo hello && sleep 60"]
 EOF
 )"
-    log "Submitting BuboJob '${job_name}' to check headless service ..."
+    log "Submitting WrenJob '${job_name}' to check headless service ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for job to start
@@ -1077,7 +1077,7 @@ _smoke_test_deletion_cleanup() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -1091,23 +1091,23 @@ spec:
     command: ["sh", "-c", "sleep 300"]
 EOF
 )"
-    log "Submitting BuboJob '${job_name}' for deletion test ..."
+    log "Submitting WrenJob '${job_name}' for deletion test ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Give the controller a moment to create resources
     sleep 5
 
-    log "Deleting BuboJob '${job_name}' ..."
-    kubectl delete bubojob "${job_name}" \
+    log "Deleting WrenJob '${job_name}' ..."
+    kubectl delete wrenjob "${job_name}" \
         -n "${TEST_NAMESPACE}" \
         --ignore-not-found \
         --timeout=60s
 
-    # Verify the BuboJob is gone
-    if kubectl get bubojob "${job_name}" -n "${TEST_NAMESPACE}" &>/dev/null; then
-        warn "BuboJob '${job_name}' still exists after deletion — finalizer may be pending"
+    # Verify the WrenJob is gone
+    if kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" &>/dev/null; then
+        warn "WrenJob '${job_name}' still exists after deletion — finalizer may be pending"
     else
-        log "  BuboJob confirmed deleted"
+        log "  WrenJob confirmed deleted"
     fi
 
     # Verify pods are cleaned up
@@ -1117,7 +1117,7 @@ EOF
     log "Waiting for pods to be removed ..."
     while true; do
         pod_count=$(kubectl get pods -n "${TEST_NAMESPACE}" \
-            -l "${BUBO_JOB_LABEL}=${job_name}" \
+            -l "${WREN_JOB_LABEL}=${job_name}" \
             --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
         if [[ "$pod_count" -eq 0 ]]; then
@@ -1150,7 +1150,7 @@ _smoke_test_pod_preservation() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -1164,7 +1164,7 @@ spec:
     command: ["echo", "preserve-me"]
 EOF
 )"
-    log "Submitting BuboJob '${job_name}' to verify pod preservation ..."
+    log "Submitting WrenJob '${job_name}' to verify pod preservation ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for job to succeed
@@ -1179,14 +1179,14 @@ EOF
 
     local pod_count
     pod_count=$(kubectl get pods -n "${TEST_NAMESPACE}" \
-        -l "${BUBO_JOB_LABEL}=${job_name}" \
+        -l "${WREN_JOB_LABEL}=${job_name}" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [[ "$pod_count" -gt 0 ]]; then
         log "  Found ${pod_count} pod(s) preserved after Succeeded — correct"
         local pod_phase
         pod_phase=$(kubectl get pods -n "${TEST_NAMESPACE}" \
-            -l "${BUBO_JOB_LABEL}=${job_name}" \
+            -l "${WREN_JOB_LABEL}=${job_name}" \
             -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
         log "  Pod phase: ${pod_phase}"
         delete_job "${job_name}"
@@ -1204,15 +1204,15 @@ smoke_test_pod_preservation() {
 
 # ---------------------------------------------------------------------------
 # Smoke test 11: Job logs — submit a job, wait for completion, verify logs
-# are retrievable via kubectl and bubo CLI.
+# are retrievable via kubectl and wren CLI.
 # ---------------------------------------------------------------------------
 _smoke_test_job_logs() {
     local job_name="smoke-job-logs"
-    local expected_output="bubo-logs-test-output"
+    local expected_output="wren-logs-test-output"
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -1227,7 +1227,7 @@ spec:
     args: ["${expected_output}"]
 EOF
 )"
-    log "Submitting BuboJob '${job_name}' to verify log retrieval ..."
+    log "Submitting WrenJob '${job_name}' to verify log retrieval ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for job to succeed
@@ -1250,23 +1250,23 @@ EOF
         return 1
     fi
 
-    # Verify logs via bubo CLI (if built)
-    local bubo_bin="${REPO_ROOT}/target/release/bubo"
-    if [[ ! -x "$bubo_bin" ]]; then
-        bubo_bin="${REPO_ROOT}/target/debug/bubo"
+    # Verify logs via wren CLI (if built)
+    local wren_bin="${REPO_ROOT}/target/release/wren"
+    if [[ ! -x "$wren_bin" ]]; then
+        wren_bin="${REPO_ROOT}/target/debug/wren"
     fi
 
-    if [[ -x "$bubo_bin" ]]; then
+    if [[ -x "$wren_bin" ]]; then
         local cli_logs
-        cli_logs=$("${bubo_bin}" logs "${job_name}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
+        cli_logs=$("${wren_bin}" logs "${job_name}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
         if [[ "$cli_logs" == *"${expected_output}"* ]]; then
-            log "  bubo logs: found expected output"
+            log "  wren logs: found expected output"
         else
-            warn "bubo CLI logs did not contain expected output (got: '${cli_logs}')"
+            warn "wren CLI logs did not contain expected output (got: '${cli_logs}')"
             warn "CLI may not be built or may have different output format"
         fi
     else
-        log "  bubo CLI binary not found — skipping CLI log check"
+        log "  wren CLI binary not found — skipping CLI log check"
     fi
 
     # Verify logs for multi-node job (prefixed output)
@@ -1274,7 +1274,7 @@ EOF
     local multi_manifest
     multi_manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: ${multi_job}
   namespace: ${TEST_NAMESPACE}
@@ -1289,21 +1289,21 @@ spec:
     args: ["multi-node-log-test"]
 EOF
 )"
-    log "Submitting 2-node BuboJob '${multi_job}' to verify multi-node logs ..."
+    log "Submitting 2-node WrenJob '${multi_job}' to verify multi-node logs ..."
     echo "${multi_manifest}" | kubectl apply -f -
 
     if wait_for_job_state "${multi_job}" "Succeeded" "${JOB_TIMEOUT}"; then
-        if [[ -x "$bubo_bin" ]]; then
+        if [[ -x "$wren_bin" ]]; then
             local multi_logs
-            multi_logs=$("${bubo_bin}" logs "${multi_job}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
+            multi_logs=$("${wren_bin}" logs "${multi_job}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
             # Multi-node logs should have pod name prefixes
             if [[ "$multi_logs" == *"${multi_job}-worker-0"* ]] && \
                [[ "$multi_logs" == *"${multi_job}-worker-1"* ]]; then
-                log "  bubo logs (multi-node): both workers present with prefixes"
+                log "  wren logs (multi-node): both workers present with prefixes"
             elif [[ "$multi_logs" == *"multi-node-log-test"* ]]; then
-                log "  bubo logs (multi-node): output found (prefix format may differ)"
+                log "  wren logs (multi-node): output found (prefix format may differ)"
             else
-                warn "bubo logs (multi-node) output unexpected: '${multi_logs}'"
+                warn "wren logs (multi-node) output unexpected: '${multi_logs}'"
             fi
         fi
     else
@@ -1349,7 +1349,7 @@ run_shell_tests() {
 main() {
     echo -e "${BOLD}"
     echo "========================================================"
-    echo "  Bubo HPC Scheduler — Integration Tests"
+    echo "  Wren HPC Scheduler — Integration Tests"
     echo "  Cluster:     ${CLUSTER_NAME}"
     echo "  Namespace:   ${NAMESPACE}"
     echo "  Image:       ${IMAGE_REF}"

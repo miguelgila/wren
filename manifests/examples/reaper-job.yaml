@@ -1,5 +1,5 @@
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: reaper-simulation
 spec:
@@ -13,8 +13,8 @@ spec:
       #!/bin/bash
       set -euo pipefail
       module load cray-mpich
-      cd ${BUBO_WORKING_DIR:-/scratch/project}
-      srun --ntasks-per-node=1 --hostfile ${BUBO_HOSTFILE} ./my_simulation
+      cd ${WREN_WORKING_DIR:-/scratch/project}
+      srun --ntasks-per-node=1 --hostfile ${WREN_HOSTFILE} ./my_simulation
     environment:
       SCRATCH: /scratch/project
       OMP_NUM_THREADS: "8"

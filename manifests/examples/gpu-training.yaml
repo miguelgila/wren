@@ -1,5 +1,5 @@
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: distributed-training
 spec:
@@ -13,7 +13,7 @@ spec:
     command:
       - mpirun
       - --hostfile
-      - /etc/bubo/hostfile
+      - /etc/wren/hostfile
       - -np
       - "16"
       - python

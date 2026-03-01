@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/bubo-core",
-    "crates/bubo-scheduler",
-    "crates/bubo-controller",
-    "crates/bubo-cli",
+    "crates/wren-core",
+    "crates/wren-scheduler",
+    "crates/wren-controller",
+    "crates/wren-cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/miguelgila/bubo"
+repository = "https://github.com/miguelgila/wren"
 
 [workspace.dependencies]
 # Kubernetes

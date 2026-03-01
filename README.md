@@ -1,18 +1,18 @@
-# Bubo
+# Wren
 
 **A lightweight, Slurm-inspired HPC job scheduler for Kubernetes — built in Rust.**
 
-Bubo provides multi-node gang scheduling, topology-aware placement, priority queues with backfill, and MPI-native job execution as a Kubernetes-native controller. Optionally execute jobs on bare metal via [Reaper](https://github.com/miguelgila/reaper).
+Wren provides multi-node gang scheduling, topology-aware placement, priority queues with backfill, and MPI-native job execution as a Kubernetes-native controller. Optionally execute jobs on bare metal via [Reaper](https://github.com/miguelgila/reaper).
 
-> **Early development** — Bubo is under active development and not yet ready for production use.
+> **Early development** — Wren is under active development and not yet ready for production use.
 
-## Why Bubo?
+## Why Wren?
 
 Traditional HPC schedulers (Slurm, PBS) are powerful but don't speak Kubernetes.
 Kubernetes schedulers don't understand multi-node gang scheduling or HPC network topology.
-Bubo bridges this gap.
+Wren bridges this gap.
 
-| Feature | Slurm | Volcano | MPI Operator | **Bubo** |
+| Feature | Slurm | Volcano | MPI Operator | **Wren** |
 |---|---|---|---|---|
 | Gang scheduling | ✅ | ✅ | ❌ | ✅ |
 | Topology-aware placement | ✅ | Partial | ❌ | ✅ |
@@ -36,7 +36,7 @@ spec:
   walltime: "4h"
   container:
     image: my-registry/my-mpi-app:latest
-    command: ["mpirun", "-np", "4", "--hostfile", "/etc/bubo/hostfile", "./app"]
+    command: ["mpirun", "-np", "4", "--hostfile", "/etc/wren/hostfile", "./app"]
     resources:
       limits:
         memory: 64Gi
@@ -49,19 +49,19 @@ spec:
 
 ```bash
 # Submit a job
-bubo submit job.yaml
+wren submit job.yaml
 
 # Check the queue
-bubo queue
+wren queue
 
 # Check job status
-bubo status my-simulation
+wren status my-simulation
 
 # View logs for a specific rank
-bubo logs my-simulation --rank 0
+wren logs my-simulation --rank 0
 
 # Cancel a job
-bubo cancel my-simulation
+wren cancel my-simulation
 ```
 
 ## Architecture
@@ -78,7 +78,7 @@ cargo build --workspace
 cargo test --workspace
 
 # Build container image
-docker build -f docker/Dockerfile.controller -t bubo-controller:latest .
+docker build -f docker/Dockerfile.controller -t wren-controller:latest .
 ```
 
 ## License

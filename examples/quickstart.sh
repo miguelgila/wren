@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Bubo Quickstart — spin up a local cluster and run example jobs.
+# Wren Quickstart — spin up a local cluster and run example jobs.
 #
 # Usage:
 #   ./examples/quickstart.sh              # Full setup + run examples
@@ -9,8 +9,8 @@
 # =============================================================================
 set -euo pipefail
 
-CLUSTER_NAME="bubo-test"
-CONTROLLER_IMAGE="bubo-controller:dev"
+CLUSTER_NAME="wren-test"
+CONTROLLER_IMAGE="wren-controller:dev"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -99,8 +99,8 @@ kubectl apply -f "$ROOT_DIR/manifests/crds/"
 ok "CRDs installed"
 
 # Verify
-kubectl get crd bubojobs.hpc.cscs.ch &>/dev/null && ok "  BuboJob CRD registered" || fail "  BuboJob CRD missing"
-kubectl get crd buboqueues.hpc.cscs.ch &>/dev/null && ok "  BuboQueue CRD registered" || fail "  BuboQueue CRD missing"
+kubectl get crd wrenjobs.hpc.cscs.ch &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
+kubectl get crd wrenqueues.hpc.cscs.ch &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
 
 # ---------------------------------------------------------------------------
 # Step 3: Build and load controller image
@@ -126,8 +126,8 @@ if [ "${SKIP_CONTROLLER:-false}" != "true" ]; then
     kubectl apply -f "$ROOT_DIR/manifests/deployment.yaml"
 
     info "Waiting for controller to be ready..."
-    if kubectl wait --for=condition=available deployment/bubo-controller \
-        -n bubo-system --timeout=90s 2>/dev/null; then
+    if kubectl wait --for=condition=available deployment/wren-controller \
+        -n wren-system --timeout=90s 2>/dev/null; then
         ok "Controller is running"
     else
         warn "Controller did not become ready in 90s. Jobs may not reconcile."
@@ -139,16 +139,16 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "==========================================="
-echo "  Bubo is ready! Let's run some examples."
+echo "  Wren is ready! Let's run some examples."
 echo "==========================================="
 echo ""
 
 # --- Example 1: Hello World ---
 info "Example 1: Hello World (single-node job)"
 kubectl apply -f "$SCRIPT_DIR/01-hello-world/job.yaml"
-ok "Created: hello-bubo"
-echo "  Check status:  kubectl get bubojob hello-bubo -o wide"
-echo "  Watch:         kubectl get bubojob hello-bubo -w"
+ok "Created: hello-wren"
+echo "  Check status:  kubectl get wrenjob hello-wren -o wide"
+echo "  Watch:         kubectl get wrenjob hello-wren -w"
 echo ""
 
 sleep 2
@@ -157,7 +157,7 @@ sleep 2
 info "Example 2: Multi-node job (2 workers, gang scheduled)"
 kubectl apply -f "$SCRIPT_DIR/02-multi-node/job.yaml"
 ok "Created: multi-node-demo"
-echo "  Check pods:    kubectl get pods -l bubo.io/job-name=multi-node-demo"
+echo "  Check pods:    kubectl get pods -l wren.io/job-name=multi-node-demo"
 echo "  Check service: kubectl get svc multi-node-demo-workers"
 echo ""
 
@@ -168,8 +168,8 @@ info "Example 3: Queue with policies"
 kubectl apply -f "$SCRIPT_DIR/03-queues/queue.yaml"
 kubectl apply -f "$SCRIPT_DIR/03-queues/job.yaml"
 ok "Created: batch queue + batch-job"
-echo "  List queues:   kubectl get buboqueues"
-echo "  Queue detail:  kubectl get buboqueue batch -o yaml"
+echo "  List queues:   kubectl get wrenqueues"
+echo "  Queue detail:  kubectl get wrenqueue batch -o yaml"
 echo ""
 
 sleep 2
@@ -178,8 +178,8 @@ sleep 2
 info "Example 4: Topology-aware placement"
 kubectl apply -f "$SCRIPT_DIR/04-topology/job.yaml"
 ok "Created: topology-aware-job"
-echo "  Check nodes:   kubectl get nodes --show-labels | grep topology.bubo.io"
-echo "  Check status:  kubectl get bubojob topology-aware-job -o yaml"
+echo "  Check nodes:   kubectl get nodes --show-labels | grep topology.wren.io"
+echo "  Check status:  kubectl get wrenjob topology-aware-job -o yaml"
 echo ""
 
 sleep 2
@@ -189,7 +189,7 @@ info "Example 5: Priority scheduling"
 kubectl apply -f "$SCRIPT_DIR/05-priority/low-priority.yaml"
 kubectl apply -f "$SCRIPT_DIR/05-priority/high-priority.yaml"
 ok "Created: low-priority-job + high-priority-job"
-echo "  List all jobs: kubectl get bubojobs"
+echo "  List all jobs: kubectl get wrenjobs"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -201,15 +201,15 @@ echo "  All examples submitted!"
 echo "==========================================="
 echo ""
 echo "Useful commands:"
-echo "  kubectl get bubojobs                         # List all jobs"
-echo "  kubectl get bubojob <name> -o yaml           # Job details"
-echo "  kubectl get pods -l bubo.io/job-name=<name> # Job pods"
-echo "  kubectl get buboqueues                      # List queues"
+echo "  kubectl get wrenjobs                         # List all jobs"
+echo "  kubectl get wrenjob <name> -o yaml           # Job details"
+echo "  kubectl get pods -l wren.io/job-name=<name> # Job pods"
+echo "  kubectl get wrenqueues                      # List queues"
 echo "  kubectl get nodes --show-labels             # Node topology"
 echo ""
 echo "To clean up examples:"
-echo "  kubectl delete bubojob --all"
-echo "  kubectl delete buboqueue --all"
+echo "  kubectl delete wrenjob --all"
+echo "  kubectl delete wrenqueue --all"
 echo ""
 echo "To tear down the cluster:"
 echo "  ./examples/quickstart.sh --cleanup"

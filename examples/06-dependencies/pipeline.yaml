@@ -5,7 +5,7 @@
 # does not resolve them yet — this example shows the intended API.
 ---
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: preprocess
 spec:
@@ -17,7 +17,7 @@ spec:
     args: ["Preprocessing complete"]
 ---
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: train
 spec:
@@ -32,7 +32,7 @@ spec:
       job: preprocess
 ---
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: BuboJob
+kind: WrenJob
 metadata:
   name: evaluate
 spec:
