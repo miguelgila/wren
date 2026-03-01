@@ -1,0 +1,86 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/miguelgila/bubo-controller
+  # Defaults to Chart.appVersion when empty
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Create a ServiceAccount for the controller
+  create: true
+  # If empty, uses the fullname helper
+  name: ""
+  annotations: {}
+
+leaderElection:
+  enabled: true
+
+metrics:
+  enabled: true
+  port: 8080
+  serviceMonitor:
+    # Set to true if you have prometheus-operator installed
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+
+webhook:
+  enabled: false
+  port: 9443
+
+# Log level passed as RUST_LOG env var
+logLevel: info
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Probe configuration
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: metrics
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: metrics
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  failureThreshold: 3
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext: {}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  capabilities:
+    drop:
+      - ALL

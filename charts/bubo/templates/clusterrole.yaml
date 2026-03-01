@@ -1,0 +1,47 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "bubo.fullname" . }}
+  labels:
+    {{- include "bubo.labels" . | nindent 4 }}
+rules:
+  # MPIJob CRD — full lifecycle management
+  - apiGroups: ["hpc.cscs.ch"]
+    resources: ["mpijobs", "mpijobs/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # BuboQueue CRD — read queues, write status
+  - apiGroups: ["hpc.cscs.ch"]
+    resources: ["buboqueues", "buboqueues/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # PodGroup CRD — gang scheduling coordination
+  - apiGroups: ["hpc.cscs.ch"]
+    resources: ["podgroups", "podgroups/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod management for MPI workers and launcher
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Service management for headless worker DNS discovery
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ConfigMap management for hostfiles
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secret management for SSH keys
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Node access for topology-aware scheduling
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Events for status reporting
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Coordination for leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

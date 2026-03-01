@@ -1,4 +1,4 @@
-.PHONY: build build-release fmt clippy check-linux test test-unit coverage ci integration integration-quick clean clean-all help
+.PHONY: build build-release fmt clippy check-linux test test-unit coverage ci integration integration-quick docker helm-lint helm-template crds clean clean-all help
 
 ## Build
 
@@ -48,6 +48,24 @@ integration: ## Run integration tests (requires kind cluster)
 
 integration-quick: ## Run integration tests (skip cluster creation)
 	SKIP_CLUSTER_CREATE=1 ./scripts/run-integration-tests.sh
+
+## Docker
+
+docker: ## Build controller container image (dev tag)
+	docker build -f docker/Dockerfile.controller -t bubo-controller:dev .
+
+## Helm
+
+helm-lint: ## Lint the Helm chart
+	helm lint charts/bubo
+
+helm-template: ## Render Helm chart templates locally (dry-run)
+	helm template bubo charts/bubo
+
+## CRDs
+
+crds: ## Regenerate CRD manifests from Rust types
+	cargo run -p bubo-core --bin crd-gen -- all
 
 ## Clean
 
