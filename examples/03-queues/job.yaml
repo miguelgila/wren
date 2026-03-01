@@ -1,0 +1,13 @@
+# Submit a job to the "batch" queue.
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: batch-job
+spec:
+  queue: batch
+  nodes: 1
+  walltime: "30m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["Running in the batch queue"]

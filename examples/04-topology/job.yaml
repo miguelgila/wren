@@ -1,0 +1,18 @@
+# Topology-aware placement: prefer nodes on the same network switch.
+# On the kind test cluster, nodes are labeled with:
+#   topology.bubo.io/switch: switch-0 | switch-1
+#   topology.bubo.io/rack:   rack-0   | rack-1
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: topology-aware-job
+spec:
+  nodes: 2
+  walltime: "10m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c"]
+    args: ["echo 'Placed on co-located nodes' && sleep 5"]
+  topology:
+    preferSameSwitch: true
+    maxHops: 2

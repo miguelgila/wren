@@ -1,0 +1,47 @@
+# Job dependency chain: preprocessing -> training -> evaluation.
+# Uses Slurm-style afterOk dependencies.
+#
+# NOTE: Dependencies are defined in the CRD spec but the reconciler
+# does not resolve them yet — this example shows the intended API.
+---
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: preprocess
+spec:
+  nodes: 1
+  walltime: "10m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["Preprocessing complete"]
+---
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: train
+spec:
+  nodes: 2
+  walltime: "1h"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["Training complete"]
+  dependencies:
+    - type: afterOk
+      job: preprocess
+---
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: evaluate
+spec:
+  nodes: 1
+  walltime: "15m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["Evaluation complete"]
+  dependencies:
+    - type: afterOk
+      job: train

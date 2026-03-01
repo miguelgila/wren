@@ -1,0 +1,13 @@
+# Simplest possible Bubo job: single-node echo.
+# This is the "hello world" — verifies the controller is working.
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: hello-bubo
+spec:
+  nodes: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["Hello from Bubo!"]

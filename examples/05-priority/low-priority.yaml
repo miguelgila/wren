@@ -1,0 +1,14 @@
+# Low-priority background job.
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: low-priority-job
+spec:
+  queue: default
+  priority: 10
+  nodes: 1
+  walltime: "15m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c"]
+    args: ["echo 'Low priority job running' && sleep 30"]

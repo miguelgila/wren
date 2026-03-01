@@ -1,0 +1,14 @@
+# High-priority urgent job — scheduled before lower-priority jobs.
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: MPIJob
+metadata:
+  name: high-priority-job
+spec:
+  queue: default
+  priority: 200
+  nodes: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["High priority job completed"]

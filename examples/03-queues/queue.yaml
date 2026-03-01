@@ -1,0 +1,10 @@
+# Define a queue with resource limits and policies.
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: BuboQueue
+metadata:
+  name: batch
+spec:
+  maxNodes: 8
+  maxWalltime: "1h"
+  maxJobsPerUser: 3
+  defaultPriority: 50
