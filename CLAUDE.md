@@ -72,7 +72,7 @@ wren/
 ├── README.md                  # User-facing documentation
 ├── Cargo.toml                 # Workspace root
 ├── Cargo.lock
-├── LICENSE                    # Apache-2.0
+├── LICENSE                    # GPL-3.0-or-later
 │
 ├── crates/
 │   ├── wren-core/           # Shared types, CRD definitions, traits
