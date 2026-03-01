@@ -5,15 +5,17 @@ use kube::runtime::watcher::Config;
 use kube::{Api, Client};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod container;
+mod leader_election;
 mod metrics;
 mod mpi;
 mod node_watcher;
 mod reaper;
 mod reconciler;
 mod reservation;
+mod webhook;
 
 use container::ContainerBackend;
 use metrics::Metrics;
@@ -31,6 +33,50 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::try_default().await?;
     let metrics = Metrics::new();
+
+    // --- Leader election ---
+    let leader_election_enabled = std::env::var("BUBO_LEADER_ELECTION")
+        .unwrap_or_else(|_| "true".to_string())
+        .trim()
+        .to_lowercase()
+        != "false";
+
+    if leader_election_enabled {
+        let le_config = leader_election::LeaderElectionConfig::default();
+        info!(
+            identity = %le_config.identity,
+            lease = %le_config.lease_name,
+            namespace = %le_config.lease_namespace,
+            "leader election enabled — waiting to acquire lease"
+        );
+
+        let mut is_leader =
+            leader_election::run_leader_election(client.clone(), le_config).await?;
+
+        // Block until we become the leader.
+        while !*is_leader.borrow() {
+            if is_leader.changed().await.is_err() {
+                anyhow::bail!("leader election channel closed unexpectedly");
+            }
+        }
+        info!("this instance is now the leader — starting controller");
+
+        // Spawn a task that shuts down if leadership is lost.
+        tokio::spawn(async move {
+            loop {
+                if is_leader.changed().await.is_err() {
+                    warn!("leader election channel closed — shutting down");
+                    std::process::exit(1);
+                }
+                if !*is_leader.borrow() {
+                    warn!("leadership lost — shutting down gracefully");
+                    std::process::exit(1);
+                }
+            }
+        });
+    } else {
+        info!("leader election disabled (BUBO_LEADER_ELECTION=false)");
+    }
 
     // Shared cluster state
     let cluster_state = Arc::new(RwLock::new(ClusterState::new()));
