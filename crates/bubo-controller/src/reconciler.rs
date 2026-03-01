@@ -45,8 +45,8 @@ pub async fn reconcile(job: &BuboJob, ctx: &ReconcilerContext) -> Result<(), Bub
         JobState::Scheduling => handle_scheduling(name, namespace, spec, ctx).await,
         JobState::Running => handle_running(name, namespace, spec, &status, ctx).await,
         JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::WalltimeExceeded => {
-            // Terminal states — ensure cleanup
-            handle_terminal(name, namespace, ctx).await
+            // Terminal states — clean up resources, preserve pods for log TTL
+            handle_terminal(name, namespace, &status, ctx).await
         }
     }
 }
@@ -341,28 +341,54 @@ async fn handle_running(
     Ok(())
 }
 
+/// How long completed pods are preserved for log retrieval before deletion.
+const POD_TTL_AFTER_FINISHED: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60); // 24 hours
+
 async fn handle_terminal(
     name: &str,
     namespace: &str,
+    status: &BuboJobStatus,
     ctx: &ReconcilerContext,
 ) -> Result<(), BuboError> {
-    // Ensure backend resources are cleaned up
+    // Ensure backend resources (services, configmaps) are cleaned up.
+    // Pods are intentionally kept for log retrieval.
     if let Err(e) = ctx.backend.cleanup(name, namespace).await {
         warn!(job = name, error = %e, "failed to clean up backend resources");
     }
 
     // Release cluster allocations
     // TODO: track per-job allocations properly instead of fixed defaults
-    let mut cluster = ctx.cluster_state.write().await;
-    let nodes_to_release: Vec<String> = cluster
-        .allocations
-        .iter()
-        .filter(|(_, alloc)| alloc.jobs.contains(&name.to_string()))
-        .map(|(node_name, _)| node_name.clone())
-        .collect();
+    {
+        let mut cluster = ctx.cluster_state.write().await;
+        let nodes_to_release: Vec<String> = cluster
+            .allocations
+            .iter()
+            .filter(|(_, alloc)| alloc.jobs.contains(&name.to_string()))
+            .map(|(node_name, _)| node_name.clone())
+            .collect();
 
-    for node in nodes_to_release {
-        cluster.deallocate(&node, 1000, 1_000_000_000, 0, name);
+        for node in nodes_to_release {
+            cluster.deallocate(&node, 1000, 1_000_000_000, 0, name);
+        }
+    }
+
+    // Check if pods should be cleaned up based on TTL.
+    // Use completion_time if available, otherwise start_time.
+    let finished_at = status
+        .completion_time
+        .as_deref()
+        .or(status.start_time.as_deref());
+
+    if let Some(time_str) = finished_at {
+        if let Ok(finished) = chrono::DateTime::parse_from_rfc3339(time_str) {
+            let elapsed = chrono::Utc::now() - finished.with_timezone(&chrono::Utc);
+            if elapsed.num_seconds() as u64 > POD_TTL_AFTER_FINISHED.as_secs() {
+                info!(job = name, "pod TTL expired, cleaning up pods");
+                if let Err(e) = ctx.backend.terminate(name, namespace).await {
+                    warn!(job = name, error = %e, "failed to delete expired pods");
+                }
+            }
+        }
     }
 
     Ok(())

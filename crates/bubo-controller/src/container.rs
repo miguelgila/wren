@@ -505,8 +505,9 @@ impl ExecutionBackend for ContainerBackend {
         job_name: &str,
         namespace: &str,
     ) -> Result<(), BuboError> {
-        // Delete pods
-        self.terminate(job_name, namespace).await?;
+        // Note: pods are intentionally NOT deleted here so that logs
+        // remain available after job completion. Pods are cleaned up
+        // by the reconciler after a TTL (see handle_terminal).
 
         // Delete headless service
         let svc_api: Api<Service> = Api::namespaced(self.client.clone(), namespace);
