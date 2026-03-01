@@ -449,13 +449,13 @@ deploy_controller() {
         exit 1
     fi
 
-    # Apply manifest then patch imagePullPolicy to Never (required for kind)
+    # Apply manifest then patch image and imagePullPolicy for kind (local image)
     kubectl apply -f "${deploy_file}"
     kubectl patch deployment wren-controller \
         -n "${NAMESPACE}" \
         --type='json' \
-        -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]' \
-        2>/dev/null || warn "Could not patch imagePullPolicy (deployment may not exist yet — continuing)"
+        -p="[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/image\",\"value\":\"${IMAGE_REF}\"},{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/imagePullPolicy\",\"value\":\"Never\"}]" \
+        2>/dev/null || warn "Could not patch deployment (deployment may not exist yet — continuing)"
 
     success "Controller manifest applied"
 }
