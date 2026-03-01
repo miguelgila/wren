@@ -13,8 +13,17 @@ use tracing::{debug, info, warn};
 
 use crate::mpi;
 
+/// Returns true if the job needs the full MPI launcher pattern
+/// (headless service + hostfile + worker pods + launcher pod with mpirun).
+/// Simple single-node, single-task jobs without an MPI spec can run
+/// the user's command directly on a worker pod.
+fn needs_mpi_launcher(spec: &bubo_core::BuboJobSpec) -> bool {
+    spec.nodes > 1 || spec.tasks_per_node > 1 || spec.mpi.is_some()
+}
+
 /// Container-based execution backend.
 /// Creates Pods + Services for MPI worker/launcher pattern.
+/// For simple single-node jobs without MPI, runs the user command directly.
 pub struct ContainerBackend {
     client: Client,
 }
@@ -287,38 +296,59 @@ impl ExecutionBackend for ContainerBackend {
         spec: &BuboJobSpec,
         placement: &Placement,
     ) -> Result<LaunchResult, BuboError> {
-        info!(job = job_name, nodes = ?placement.nodes, "launching container-based MPI job");
+        let use_launcher = needs_mpi_launcher(spec);
 
-        // 1. Create headless service for DNS discovery
-        self.create_headless_service(job_name, namespace).await?;
+        if use_launcher {
+            info!(job = job_name, nodes = ?placement.nodes, "launching MPI job with launcher pattern");
 
-        // 2. Create hostfile ConfigMap
-        self.create_hostfile_configmap(job_name, namespace, placement, spec.tasks_per_node)
-            .await?;
+            // 1. Create headless service for DNS discovery
+            self.create_headless_service(job_name, namespace).await?;
 
-        // 3. Create worker pods — one per node
-        let mut resource_ids = Vec::new();
-        for (rank, node) in placement.nodes.iter().enumerate() {
+            // 2. Create hostfile ConfigMap
+            self.create_hostfile_configmap(job_name, namespace, placement, spec.tasks_per_node)
+                .await?;
+
+            // 3. Create worker pods — one per node
+            let mut resource_ids = Vec::new();
+            for (rank, node) in placement.nodes.iter().enumerate() {
+                let pod_name = self
+                    .create_worker_pod(job_name, namespace, spec, node, rank as u32)
+                    .await?;
+                resource_ids.push(pod_name);
+            }
+
+            // 4. Create launcher pod
+            let launcher = self
+                .create_launcher_pod(job_name, namespace, spec, placement)
+                .await?;
+            resource_ids.push(launcher);
+
+            Ok(LaunchResult {
+                resource_ids,
+                message: format!(
+                    "launched {} worker pods + launcher on {} nodes",
+                    placement.nodes.len(),
+                    placement.nodes.len()
+                ),
+            })
+        } else {
+            info!(job = job_name, node = ?placement.nodes.first(), "launching simple job (no MPI launcher)");
+
+            // Simple single-node job: just create a worker pod that runs the user's command
+            let mut resource_ids = Vec::new();
+            let node = placement.nodes.first().ok_or_else(|| BuboError::ValidationError {
+                reason: "placement has no nodes".to_string(),
+            })?;
             let pod_name = self
-                .create_worker_pod(job_name, namespace, spec, node, rank as u32)
+                .create_worker_pod(job_name, namespace, spec, node, 0)
                 .await?;
             resource_ids.push(pod_name);
+
+            Ok(LaunchResult {
+                resource_ids,
+                message: "launched 1 worker pod (simple mode)".to_string(),
+            })
         }
-
-        // 4. Create launcher pod
-        let launcher = self
-            .create_launcher_pod(job_name, namespace, spec, placement)
-            .await?;
-        resource_ids.push(launcher);
-
-        Ok(LaunchResult {
-            resource_ids,
-            message: format!(
-                "launched {} worker pods + launcher on {} nodes",
-                placement.nodes.len(),
-                placement.nodes.len()
-            ),
-        })
     }
 
     async fn status(
@@ -354,8 +384,8 @@ impl ExecutionBackend for ContainerBackend {
                 == Some(&"launcher".to_string())
         });
 
-        // Check launcher status
         if let Some(launcher_pod) = launcher {
+            // MPI launcher pattern: launcher pod drives completion
             if let Some(status) = &launcher_pod.status {
                 if let Some(phase) = &status.phase {
                     match phase.as_str() {
@@ -371,25 +401,70 @@ impl ExecutionBackend for ContainerBackend {
                     }
                 }
             }
-        }
 
-        // Count ready workers
-        let ready = workers
-            .iter()
-            .filter(|p| {
-                p.status
-                    .as_ref()
-                    .and_then(|s| s.phase.as_deref())
-                    == Some("Running")
-            })
-            .count() as u32;
+            // Count ready workers
+            let ready = workers
+                .iter()
+                .filter(|p| {
+                    p.status
+                        .as_ref()
+                        .and_then(|s| s.phase.as_deref())
+                        == Some("Running")
+                })
+                .count() as u32;
 
-        let total = workers.len() as u32;
+            let total = workers.len() as u32;
 
-        if ready == total && total > 0 {
-            Ok(BackendJobStatus::Running)
+            if ready == total && total > 0 {
+                Ok(BackendJobStatus::Running)
+            } else {
+                Ok(BackendJobStatus::Launching { ready, total })
+            }
         } else {
-            Ok(BackendJobStatus::Launching { ready, total })
+            // Simple mode (no launcher): worker pods drive completion
+            let total = workers.len() as u32;
+            let succeeded = workers
+                .iter()
+                .filter(|p| {
+                    p.status
+                        .as_ref()
+                        .and_then(|s| s.phase.as_deref())
+                        == Some("Succeeded")
+                })
+                .count() as u32;
+            let failed = workers
+                .iter()
+                .filter(|p| {
+                    p.status
+                        .as_ref()
+                        .and_then(|s| s.phase.as_deref())
+                        == Some("Failed")
+                })
+                .count() as u32;
+            let running = workers
+                .iter()
+                .filter(|p| {
+                    p.status
+                        .as_ref()
+                        .and_then(|s| s.phase.as_deref())
+                        == Some("Running")
+                })
+                .count() as u32;
+
+            if failed > 0 {
+                Ok(BackendJobStatus::Failed {
+                    message: format!("{} of {} worker pods failed", failed, total),
+                })
+            } else if succeeded == total && total > 0 {
+                Ok(BackendJobStatus::Succeeded)
+            } else if running > 0 || succeeded > 0 {
+                Ok(BackendJobStatus::Running)
+            } else {
+                Ok(BackendJobStatus::Launching {
+                    ready: running + succeeded,
+                    total,
+                })
+            }
         }
     }
 

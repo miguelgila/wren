@@ -188,7 +188,7 @@ pub async fn run_leader_election(
                     match lease_api
                         .patch(
                             &lease_name,
-                            &PatchParams::apply("bubo-controller"),
+                            &PatchParams::apply("bubo-controller").force(),
                             &Patch::Apply(patch),
                         )
                         .await

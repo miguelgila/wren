@@ -29,7 +29,7 @@ spec:
       serviceAccountName: bubo-controller
       containers:
         - name: controller
-          image: bubo-controller:latest
+          image: bubo-controller:dev
           imagePullPolicy: IfNotPresent
           ports:
             - name: metrics

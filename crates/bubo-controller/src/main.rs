@@ -117,9 +117,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Start the BuboJob controller
     let bubojob_api: Api<BuboJob> = Api::all(client.clone());
+    let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::all(client.clone());
 
     info!("starting BuboJob controller");
     Controller::new(bubojob_api, Config::default())
+        // Watch pods with bubo labels — triggers re-reconciliation of the owning
+        // BuboJob when a pod phase changes (e.g. worker completes).
+        .watches(pod_api, Config::default().labels("app.kubernetes.io/managed-by=bubo"), |pod| {
+            pod.metadata.labels.as_ref()
+                .and_then(|l| l.get("bubo.io/job-name"))
+                .map(|name| {
+                    kube::runtime::reflector::ObjectRef::<BuboJob>::new(name)
+                        .within(pod.metadata.namespace.as_deref().unwrap_or("default"))
+                })
+        })
         .shutdown_on_signal()
         .run(
             |job: Arc<BuboJob>, ctx: Arc<ReconcilerContext>| async move {
