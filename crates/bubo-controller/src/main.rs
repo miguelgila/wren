@@ -9,12 +9,17 @@ use tracing::{error, info, warn};
 
 mod container;
 mod leader_election;
+#[allow(dead_code)]
 mod metrics;
+#[allow(dead_code)]
 mod mpi;
 mod node_watcher;
+#[allow(dead_code)]
 mod reaper;
 mod reconciler;
+#[allow(dead_code)]
 mod reservation;
+#[allow(dead_code)]
 mod webhook;
 
 use container::ContainerBackend;
