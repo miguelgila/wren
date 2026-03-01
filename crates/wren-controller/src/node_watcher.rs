@@ -1,9 +1,9 @@
-use wren_core::{ClusterState, NodeResources};
 use k8s_openapi::api::core::v1::Node;
 use kube::{Api, Client};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
+use wren_core::{ClusterState, NodeResources};
 
 /// Watches Kubernetes nodes and maintains an up-to-date ClusterState.
 pub struct NodeWatcher {
@@ -45,14 +45,10 @@ impl NodeWatcher {
         let memory_bytes = parse_memory(allocatable.get("memory")?);
         let gpus = allocatable
             .get("nvidia.com/gpu")
-            .map(|q| parse_integer(q))
+            .map(parse_integer)
             .unwrap_or(0);
 
-        let btree_labels = node
-            .metadata
-            .labels
-            .clone()
-            .unwrap_or_default();
+        let btree_labels = node.metadata.labels.clone().unwrap_or_default();
 
         let switch_group = btree_labels.get("network.wren.io/switch-group").cloned();
         let rack = btree_labels.get("topology.kubernetes.io/zone").cloned();

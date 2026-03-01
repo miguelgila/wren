@@ -1,5 +1,5 @@
-use wren_core::{WrenError, ClusterState, NodeResources, Placement};
 use tracing::{debug, warn};
+use wren_core::{ClusterState, NodeResources, Placement, WrenError};
 
 /// Resource tracker that wraps `ClusterState` and provides atomic
 /// try_allocate / release operations for the scheduler.
@@ -32,12 +32,12 @@ impl ResourceTracker {
     ) -> Result<(), WrenError> {
         // --- check phase (no mutations) ---
         for node_name in &placement.nodes {
-            let (avail_cpu, avail_mem, avail_gpu) =
-                self.state.available_resources(node_name).ok_or_else(|| {
-                    WrenError::NoFeasiblePlacement {
-                        job_name: job_name.to_string(),
-                        reason: format!("node '{}' not found in cluster state", node_name),
-                    }
+            let (avail_cpu, avail_mem, avail_gpu) = self
+                .state
+                .available_resources(node_name)
+                .ok_or_else(|| WrenError::NoFeasiblePlacement {
+                    job_name: job_name.to_string(),
+                    reason: format!("node '{}' not found in cluster state", node_name),
                 })?;
 
             if avail_cpu < cpu_per_node_millis
@@ -118,12 +118,20 @@ impl ResourceTracker {
 
     /// Total allocatable CPU millis across all nodes.
     pub fn total_cpu_millis(&self) -> u64 {
-        self.state.nodes.iter().map(|n| n.allocatable_cpu_millis).sum()
+        self.state
+            .nodes
+            .iter()
+            .map(|n| n.allocatable_cpu_millis)
+            .sum()
     }
 
     /// Total allocatable memory bytes across all nodes.
     pub fn total_memory_bytes(&self) -> u64 {
-        self.state.nodes.iter().map(|n| n.allocatable_memory_bytes).sum()
+        self.state
+            .nodes
+            .iter()
+            .map(|n| n.allocatable_memory_bytes)
+            .sum()
     }
 
     /// Total allocatable GPUs across all nodes.
@@ -133,12 +141,20 @@ impl ResourceTracker {
 
     /// Used CPU millis across all nodes.
     pub fn used_cpu_millis(&self) -> u64 {
-        self.state.allocations.values().map(|a| a.used_cpu_millis).sum()
+        self.state
+            .allocations
+            .values()
+            .map(|a| a.used_cpu_millis)
+            .sum()
     }
 
     /// Used memory bytes across all nodes.
     pub fn used_memory_bytes(&self) -> u64 {
-        self.state.allocations.values().map(|a| a.used_memory_bytes).sum()
+        self.state
+            .allocations
+            .values()
+            .map(|a| a.used_memory_bytes)
+            .sum()
     }
 
     /// Used GPUs across all nodes.
@@ -207,8 +223,12 @@ mod tests {
 
     fn two_node_tracker() -> ResourceTracker {
         let mut state = ClusterState::new();
-        state.nodes.push(make_node("node-0", 8000, 16_000_000_000, 4));
-        state.nodes.push(make_node("node-1", 8000, 16_000_000_000, 4));
+        state
+            .nodes
+            .push(make_node("node-0", 8000, 16_000_000_000, 4));
+        state
+            .nodes
+            .push(make_node("node-1", 8000, 16_000_000_000, 4));
         ResourceTracker::new(state)
     }
 
@@ -289,8 +309,12 @@ mod tests {
         let p0 = make_placement(&["node-0"]);
         let p1 = make_placement(&["node-1"]);
 
-        tracker.try_allocate("job-1", &p0, 4000, 8_000_000_000, 0).unwrap();
-        tracker.try_allocate("job-2", &p1, 2000, 4_000_000_000, 0).unwrap();
+        tracker
+            .try_allocate("job-1", &p0, 4000, 8_000_000_000, 0)
+            .unwrap();
+        tracker
+            .try_allocate("job-2", &p1, 2000, 4_000_000_000, 0)
+            .unwrap();
 
         assert_eq!(tracker.used_cpu_millis(), 6000);
         assert_eq!(tracker.used_memory_bytes(), 12_000_000_000);
@@ -301,8 +325,12 @@ mod tests {
         // If the second node of a two-node placement fails the check,
         // no allocation should be recorded on the first node either.
         let mut state = ClusterState::new();
-        state.nodes.push(make_node("node-0", 8000, 16_000_000_000, 0));
-        state.nodes.push(make_node("node-1", 2000, 16_000_000_000, 0)); // weak CPU
+        state
+            .nodes
+            .push(make_node("node-0", 8000, 16_000_000_000, 0));
+        state
+            .nodes
+            .push(make_node("node-1", 2000, 16_000_000_000, 0)); // weak CPU
         let mut tracker = ResourceTracker::new(state);
 
         let placement = make_placement(&["node-0", "node-1"]);
@@ -322,7 +350,9 @@ mod tests {
         assert_eq!(tracker.cpu_utilization(), 0.0);
 
         let placement = make_placement(&["node-0"]);
-        tracker.try_allocate("job-1", &placement, 8000, 16_000_000_000, 0).unwrap();
+        tracker
+            .try_allocate("job-1", &placement, 8000, 16_000_000_000, 0)
+            .unwrap();
 
         // 8000 / 16000 = 0.5
         assert!((tracker.cpu_utilization() - 0.5).abs() < 1e-9);

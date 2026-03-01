@@ -1,7 +1,7 @@
-use wren_core::Placement;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
+use wren_core::Placement;
 
 /// A resource reservation that prevents double-booking during the
 /// scheduling → launch window. Reservations expire after a timeout
@@ -161,8 +161,20 @@ mod tests {
     fn test_reserved_on_node() {
         let mut mgr = ReservationManager::default();
 
-        mgr.reserve("job-1", &make_placement(&["node-0", "node-1"]), 4000, 8_000_000_000, 2);
-        mgr.reserve("job-2", &make_placement(&["node-0", "node-2"]), 2000, 4_000_000_000, 1);
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0", "node-1"]),
+            4000,
+            8_000_000_000,
+            2,
+        );
+        mgr.reserve(
+            "job-2",
+            &make_placement(&["node-0", "node-2"]),
+            2000,
+            4_000_000_000,
+            1,
+        );
 
         // node-0 has reservations from both jobs
         let (cpu, mem, gpu) = mgr.reserved_on_node("node-0");
@@ -192,7 +204,13 @@ mod tests {
     #[test]
     fn test_expire_stale() {
         let mut mgr = ReservationManager::new(Duration::from_millis(10));
-        mgr.reserve("job-1", &make_placement(&["node-0"]), 4000, 8_000_000_000, 0);
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
 
         // Reservation should be active immediately
         assert_eq!(mgr.active_count(), 1);
@@ -209,9 +227,27 @@ mod tests {
     #[test]
     fn test_multiple_reservations() {
         let mut mgr = ReservationManager::default();
-        mgr.reserve("job-1", &make_placement(&["node-0"]), 4000, 8_000_000_000, 0);
-        mgr.reserve("job-2", &make_placement(&["node-1"]), 4000, 8_000_000_000, 0);
-        mgr.reserve("job-3", &make_placement(&["node-2"]), 4000, 8_000_000_000, 0);
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
+        mgr.reserve(
+            "job-2",
+            &make_placement(&["node-1"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
+        mgr.reserve(
+            "job-3",
+            &make_placement(&["node-2"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
 
         assert_eq!(mgr.active_count(), 3);
 
@@ -227,8 +263,20 @@ mod tests {
     #[test]
     fn test_overwrite_reservation() {
         let mut mgr = ReservationManager::default();
-        mgr.reserve("job-1", &make_placement(&["node-0"]), 4000, 8_000_000_000, 0);
-        mgr.reserve("job-1", &make_placement(&["node-1"]), 2000, 4_000_000_000, 0);
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-1"]),
+            2000,
+            4_000_000_000,
+            0,
+        );
 
         // Should overwrite — only 1 reservation
         assert_eq!(mgr.active_count(), 1);

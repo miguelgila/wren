@@ -1,4 +1,3 @@
-use wren_core::{WrenError, WrenJob, ClusterState};
 use futures::StreamExt;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
@@ -6,6 +5,7 @@ use kube::{Api, Client};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+use wren_core::{ClusterState, WrenError, WrenJob};
 
 mod container;
 mod leader_election;
@@ -55,8 +55,7 @@ async fn main() -> anyhow::Result<()> {
             "leader election enabled — waiting to acquire lease"
         );
 
-        let mut is_leader =
-            leader_election::run_leader_election(client.clone(), le_config).await?;
+        let mut is_leader = leader_election::run_leader_election(client.clone(), le_config).await?;
 
         // Block until we become the leader.
         while !*is_leader.borrow() {
@@ -128,14 +127,20 @@ async fn main() -> anyhow::Result<()> {
     Controller::new(wrenjob_api, Config::default())
         // Watch pods with wren labels — triggers re-reconciliation of the owning
         // WrenJob when a pod phase changes (e.g. worker completes).
-        .watches(pod_api, Config::default().labels("app.kubernetes.io/managed-by=wren"), |pod| {
-            pod.metadata.labels.as_ref()
-                .and_then(|l| l.get("wren.io/job-name"))
-                .map(|name| {
-                    kube::runtime::reflector::ObjectRef::<WrenJob>::new(name)
-                        .within(pod.metadata.namespace.as_deref().unwrap_or("default"))
-                })
-        })
+        .watches(
+            pod_api,
+            Config::default().labels("app.kubernetes.io/managed-by=wren"),
+            |pod| {
+                pod.metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|l| l.get("wren.io/job-name"))
+                    .map(|name| {
+                        kube::runtime::reflector::ObjectRef::<WrenJob>::new(name)
+                            .within(pod.metadata.namespace.as_deref().unwrap_or("default"))
+                    })
+            },
+        )
         .shutdown_on_signal()
         .run(
             |job: Arc<WrenJob>, ctx: Arc<ReconcilerContext>| async move {

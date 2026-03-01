@@ -1,6 +1,4 @@
 use async_trait::async_trait;
-use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
-use wren_core::{WrenError, WrenJobSpec, Placement};
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSpec, Service, ServicePort, ServiceSpec,
 };
@@ -10,6 +8,8 @@ use kube::api::{DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
 use tracing::{debug, info, warn};
+use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
+use wren_core::{Placement, WrenError, WrenJobSpec};
 
 use crate::mpi;
 
@@ -363,11 +363,7 @@ impl ExecutionBackend for ContainerBackend {
         }
     }
 
-    async fn status(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<BackendJobStatus, WrenError> {
+    async fn status(&self, job_name: &str, namespace: &str) -> Result<BackendJobStatus, WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
         let lp = ListParams::default().labels(&format!("wren.io/job-name={}", job_name));
         let pods = pod_api.list(&lp).await.map_err(WrenError::KubeError)?;
@@ -417,12 +413,7 @@ impl ExecutionBackend for ContainerBackend {
             // Count ready workers
             let ready = workers
                 .iter()
-                .filter(|p| {
-                    p.status
-                        .as_ref()
-                        .and_then(|s| s.phase.as_deref())
-                        == Some("Running")
-                })
+                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
                 .count() as u32;
 
             let total = workers.len() as u32;
@@ -437,30 +428,15 @@ impl ExecutionBackend for ContainerBackend {
             let total = workers.len() as u32;
             let succeeded = workers
                 .iter()
-                .filter(|p| {
-                    p.status
-                        .as_ref()
-                        .and_then(|s| s.phase.as_deref())
-                        == Some("Succeeded")
-                })
+                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Succeeded"))
                 .count() as u32;
             let failed = workers
                 .iter()
-                .filter(|p| {
-                    p.status
-                        .as_ref()
-                        .and_then(|s| s.phase.as_deref())
-                        == Some("Failed")
-                })
+                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Failed"))
                 .count() as u32;
             let running = workers
                 .iter()
-                .filter(|p| {
-                    p.status
-                        .as_ref()
-                        .and_then(|s| s.phase.as_deref())
-                        == Some("Running")
-                })
+                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
                 .count() as u32;
 
             if failed > 0 {
@@ -480,11 +456,7 @@ impl ExecutionBackend for ContainerBackend {
         }
     }
 
-    async fn terminate(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<(), WrenError> {
+    async fn terminate(&self, job_name: &str, namespace: &str) -> Result<(), WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
         let lp = ListParams::default().labels(&format!("wren.io/job-name={}", job_name));
         let pods = pod_api.list(&lp).await.map_err(WrenError::KubeError)?;
@@ -500,11 +472,7 @@ impl ExecutionBackend for ContainerBackend {
         Ok(())
     }
 
-    async fn cleanup(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<(), WrenError> {
+    async fn cleanup(&self, job_name: &str, namespace: &str) -> Result<(), WrenError> {
         // Note: pods are intentionally NOT deleted here so that logs
         // remain available after job completion. Pods are cleaned up
         // by the reconciler after a TTL (see handle_terminal).

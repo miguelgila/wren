@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use wren_core::WrenJob;
 use kube::{
     api::{Api, DeleteParams},
     Client,
 };
 use tracing::info;
+use wren_core::WrenJob;
 
 /// Delete an WrenJob by name in the given namespace.
 pub async fn run(job: &str, namespace: &str) -> Result<()> {

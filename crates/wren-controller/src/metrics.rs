@@ -91,13 +91,13 @@ impl Metrics {
                 "wren_job_wait_seconds",
                 "Time jobs spend waiting in queue before scheduling",
             )
-            .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0]),
+            .buckets(vec![
+                1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
+            ]),
             &["queue"],
         )
         .expect("metric can be created");
-        registry
-            .register(Box::new(job_wait_time.clone()))
-            .unwrap();
+        registry.register(Box::new(job_wait_time.clone())).unwrap();
 
         let nodes_total = IntGauge::new("wren_nodes_total", "Total nodes tracked by scheduler")
             .expect("metric can be created");
@@ -154,9 +154,7 @@ impl Metrics {
             .buckets(vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]),
         )
         .expect("metric can be created");
-        registry
-            .register(Box::new(topology_score.clone()))
-            .unwrap();
+        registry.register(Box::new(topology_score.clone())).unwrap();
 
         Self {
             registry: Arc::new(registry),
@@ -185,9 +183,7 @@ impl Metrics {
         self.jobs_active
             .with_label_values(&[new_state, queue])
             .inc();
-        self.jobs_total
-            .with_label_values(&[new_state, queue])
-            .inc();
+        self.jobs_total.with_label_values(&[new_state, queue]).inc();
     }
 
     pub fn record_scheduling_latency(&self, result: &str, duration_secs: f64) {
@@ -316,9 +312,7 @@ mod tests {
         m.update_queue_depth("gpu", 3);
 
         let families = m.registry.gather();
-        let depth = families
-            .iter()
-            .find(|f| f.get_name() == "wren_queue_depth");
+        let depth = families.iter().find(|f| f.get_name() == "wren_queue_depth");
         assert!(depth.is_some());
     }
 

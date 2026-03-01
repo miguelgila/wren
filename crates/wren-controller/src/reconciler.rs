@@ -1,13 +1,11 @@
-use wren_core::backend::{BackendJobStatus, ExecutionBackend};
-use wren_core::{
-    WrenError, WrenJob, WrenJobStatus, ClusterState, JobState, WalltimeDuration,
-};
-use wren_scheduler::gang::GangScheduler;
 use kube::api::{Patch, PatchParams};
 use kube::{Api, Client};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+use wren_core::backend::{BackendJobStatus, ExecutionBackend};
+use wren_core::{ClusterState, JobState, WalltimeDuration, WrenError, WrenJob, WrenJobStatus};
+use wren_scheduler::gang::GangScheduler;
 
 use crate::metrics::Metrics;
 use crate::reservation::ReservationManager;
@@ -24,11 +22,7 @@ pub struct ReconcilerContext {
 /// Reconcile a single WrenJob. Called by the controller whenever the resource changes.
 pub async fn reconcile(job: &WrenJob, ctx: &ReconcilerContext) -> Result<(), WrenError> {
     let name = job.metadata.name.as_deref().unwrap_or("unknown");
-    let namespace = job
-        .metadata
-        .namespace
-        .as_deref()
-        .unwrap_or("default");
+    let namespace = job.metadata.namespace.as_deref().unwrap_or("default");
 
     let status = job.status.as_ref().cloned().unwrap_or_default();
     let spec = &job.spec;
@@ -44,7 +38,10 @@ pub async fn reconcile(job: &WrenJob, ctx: &ReconcilerContext) -> Result<(), Wre
         JobState::Pending => handle_pending(name, namespace, spec, ctx).await,
         JobState::Scheduling => handle_scheduling(name, namespace, spec, ctx).await,
         JobState::Running => handle_running(name, namespace, spec, &status, ctx).await,
-        JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::WalltimeExceeded => {
+        JobState::Succeeded
+        | JobState::Failed
+        | JobState::Cancelled
+        | JobState::WalltimeExceeded => {
             // Terminal states — clean up resources, preserve pods for log TTL
             handle_terminal(name, namespace, &status, ctx).await
         }
@@ -84,7 +81,8 @@ async fn handle_pending(
 
     // Transition to Scheduling
     update_status(name, namespace, JobState::Scheduling, None, ctx).await?;
-    ctx.metrics.record_job_state_change(&spec.queue, "Pending", "Scheduling");
+    ctx.metrics
+        .record_job_state_change(&spec.queue, "Pending", "Scheduling");
     Ok(())
 }
 
@@ -119,7 +117,8 @@ async fn handle_scheduling(
     match result {
         Ok(placement) => {
             let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
-            ctx.metrics.record_scheduling_latency("success", scheduling_secs);
+            ctx.metrics
+                .record_scheduling_latency("success", scheduling_secs);
             ctx.metrics.record_topology_score(placement.score);
 
             info!(
@@ -181,8 +180,12 @@ async fn handle_scheduling(
                     .await
                     .map_err(WrenError::KubeError)?;
 
-                    ctx.metrics.record_job_state_change(&spec.queue, "Scheduling", "Running");
-                    ctx.metrics.scheduling_attempts.with_label_values(&["success"]).inc();
+                    ctx.metrics
+                        .record_job_state_change(&spec.queue, "Scheduling", "Running");
+                    ctx.metrics
+                        .scheduling_attempts
+                        .with_label_values(&["success"])
+                        .inc();
                 }
                 Err(e) => {
                     // Release reservation on failure
@@ -206,20 +209,28 @@ async fn handle_scheduling(
                         ctx,
                     )
                     .await?;
-                    ctx.metrics.scheduling_attempts.with_label_values(&["failed"]).inc();
+                    ctx.metrics
+                        .scheduling_attempts
+                        .with_label_values(&["failed"])
+                        .inc();
                 }
             }
         }
         Err(WrenError::NoFeasiblePlacement { .. }) => {
             let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
-            ctx.metrics.record_scheduling_latency("no_placement", scheduling_secs);
+            ctx.metrics
+                .record_scheduling_latency("no_placement", scheduling_secs);
             // Stay in Scheduling state — will retry on next reconcile
             info!(job = name, "no feasible placement, will retry");
-            ctx.metrics.scheduling_attempts.with_label_values(&["no_placement"]).inc();
+            ctx.metrics
+                .scheduling_attempts
+                .with_label_values(&["no_placement"])
+                .inc();
         }
         Err(e) => {
             let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
-            ctx.metrics.record_scheduling_latency("error", scheduling_secs);
+            ctx.metrics
+                .record_scheduling_latency("error", scheduling_secs);
             error!(job = name, error = %e, "scheduling error");
             update_status(
                 name,
@@ -264,19 +275,14 @@ async fn handle_running(
             )
             .await
             .map_err(WrenError::KubeError)?;
-            ctx.metrics.record_job_state_change(&spec.queue, "Running", "Succeeded");
+            ctx.metrics
+                .record_job_state_change(&spec.queue, "Running", "Succeeded");
         }
         BackendJobStatus::Failed { message } => {
             warn!(job = name, reason = %message, "job failed");
-            update_status(
-                name,
-                namespace,
-                JobState::Failed,
-                Some(&message),
-                ctx,
-            )
-            .await?;
-            ctx.metrics.record_job_state_change(&spec.queue, "Running", "Failed");
+            update_status(name, namespace, JobState::Failed, Some(&message), ctx).await?;
+            ctx.metrics
+                .record_job_state_change(&spec.queue, "Running", "Failed");
         }
         BackendJobStatus::Running => {
             // Check walltime
@@ -301,7 +307,11 @@ async fn handle_running(
                                     ctx,
                                 )
                                 .await?;
-                                ctx.metrics.record_job_state_change(&spec.queue, "Running", "WalltimeExceeded");
+                                ctx.metrics.record_job_state_change(
+                                    &spec.queue,
+                                    "Running",
+                                    "WalltimeExceeded",
+                                );
                             }
                         }
                     }

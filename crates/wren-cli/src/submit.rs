@@ -1,19 +1,18 @@
 use anyhow::{Context, Result};
-use wren_core::WrenJob;
 use kube::{
     api::{Api, PostParams},
     Client,
 };
 use std::fs;
 use tracing::info;
+use wren_core::WrenJob;
 
 /// Submit an WrenJob from a YAML file, with optional queue and nodes overrides.
 pub async fn run(file: &str, queue: Option<&str>, nodes: Option<u32>) -> Result<()> {
-    let yaml = fs::read_to_string(file)
-        .with_context(|| format!("failed to read job file: {file}"))?;
+    let yaml =
+        fs::read_to_string(file).with_context(|| format!("failed to read job file: {file}"))?;
 
-    let mut job: WrenJob =
-        serde_yaml::from_str(&yaml).context("failed to parse WrenJob YAML")?;
+    let mut job: WrenJob = serde_yaml::from_str(&yaml).context("failed to parse WrenJob YAML")?;
 
     if let Some(q) = queue {
         job.spec.queue = q.to_string();

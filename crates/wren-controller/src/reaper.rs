@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
-use wren_core::{WrenError, WrenJobSpec, Placement};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
+use wren_core::{Placement, WrenError, WrenJobSpec};
 
 use crate::mpi;
 
@@ -98,8 +98,8 @@ impl ReaperBackend {
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(DEFAULT_REAPER_AGENT_PORT);
 
-        let agent_scheme = std::env::var("REAPER_AGENT_SCHEME")
-            .unwrap_or_else(|_| "http".to_string());
+        let agent_scheme =
+            std::env::var("REAPER_AGENT_SCHEME").unwrap_or_else(|_| "http".to_string());
 
         Self {
             http: HttpClient::new(),
@@ -141,17 +141,16 @@ impl ReaperBackend {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(WrenError::BackendError {
-                message: format!(
-                    "Reaper agent on {node_name} returned {status}: {body}"
-                ),
+                message: format!("Reaper agent on {node_name} returned {status}: {body}"),
             });
         }
 
-        response.json::<ReaperJobResponse>().await.map_err(|e| {
-            WrenError::BackendError {
+        response
+            .json::<ReaperJobResponse>()
+            .await
+            .map_err(|e| WrenError::BackendError {
                 message: format!("failed to parse Reaper agent response from {node_name}: {e}"),
-            }
-        })
+            })
     }
 
     /// Poll the status of a job from the Reaper agent on `node_name`.
@@ -191,13 +190,14 @@ impl ReaperBackend {
             });
         }
 
-        response.json::<ReaperJobStatus>().await.map_err(|e| {
-            WrenError::BackendError {
+        response
+            .json::<ReaperJobStatus>()
+            .await
+            .map_err(|e| WrenError::BackendError {
                 message: format!(
                     "failed to parse status response from Reaper agent on {node_name}: {e}"
                 ),
-            }
-        })
+            })
     }
 
     /// Send a DELETE request to terminate a job on the Reaper agent.
@@ -253,10 +253,7 @@ impl ReaperBackend {
 
         // Expose MPI implementation so the script can load the right module
         if let Some(mpi_spec) = &spec.mpi {
-            environment.insert(
-                "WREN_MPI_IMPL".to_string(),
-                mpi_spec.implementation.clone(),
-            );
+            environment.insert("WREN_MPI_IMPL".to_string(), mpi_spec.implementation.clone());
             if let Some(ref iface) = mpi_spec.fabric_interface {
                 environment.insert("WREN_FABRIC_INTERFACE".to_string(), iface.clone());
             }
@@ -293,13 +290,14 @@ impl ExecutionBackend for ReaperBackend {
 
         let mut resource_ids = Vec::new();
         let mut launcher_job_id: Option<String> = None;
-        let launcher_node = placement
-            .nodes
-            .first()
-            .cloned()
-            .ok_or_else(|| WrenError::ValidationError {
-                reason: "placement must contain at least one node".to_string(),
-            })?;
+        let launcher_node =
+            placement
+                .nodes
+                .first()
+                .cloned()
+                .ok_or_else(|| WrenError::ValidationError {
+                    reason: "placement must contain at least one node".to_string(),
+                })?;
 
         for (rank, node) in placement.nodes.iter().enumerate() {
             let request = self.build_job_request(spec, placement, rank as u32)?;
@@ -370,18 +368,17 @@ impl ExecutionBackend for ReaperBackend {
         Ok(backend_status)
     }
 
-    async fn terminate(
-        &self,
-        job_name: &str,
-        _namespace: &str,
-    ) -> Result<(), WrenError> {
+    async fn terminate(&self, job_name: &str, _namespace: &str) -> Result<(), WrenError> {
         let nodes = {
             let nodes_map = self.job_nodes.lock().await;
             nodes_map.get(job_name).cloned().unwrap_or_default()
         };
 
         if nodes.is_empty() {
-            debug!(job = job_name, "no Reaper nodes tracked, nothing to terminate");
+            debug!(
+                job = job_name,
+                "no Reaper nodes tracked, nothing to terminate"
+            );
             return Ok(());
         }
 
@@ -401,15 +398,15 @@ impl ExecutionBackend for ReaperBackend {
             self.terminate_on_agent(node, &job_id).await;
         }
 
-        info!(job = job_name, nodes = nodes.len(), "sent terminate to all Reaper agents");
+        info!(
+            job = job_name,
+            nodes = nodes.len(),
+            "sent terminate to all Reaper agents"
+        );
         Ok(())
     }
 
-    async fn cleanup(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<(), WrenError> {
+    async fn cleanup(&self, job_name: &str, namespace: &str) -> Result<(), WrenError> {
         // Bare-metal jobs have no extra Kubernetes resources to remove.
         // Terminate the processes and clear our local state.
         self.terminate(job_name, namespace).await?;
@@ -436,15 +433,9 @@ fn map_reaper_state(status: &ReaperJobStatus) -> BackendJobStatus {
         ReaperJobState::Running => BackendJobStatus::Running,
         ReaperJobState::Succeeded => BackendJobStatus::Succeeded,
         ReaperJobState::Failed => BackendJobStatus::Failed {
-            message: status
-                .message
-                .clone()
-                .unwrap_or_else(|| {
-                    format!(
-                        "job exited with code {}",
-                        status.exit_code.unwrap_or(-1)
-                    )
-                }),
+            message: status.message.clone().unwrap_or_else(|| {
+                format!("job exited with code {}", status.exit_code.unwrap_or(-1))
+            }),
         },
         ReaperJobState::Unknown => BackendJobStatus::NotFound,
     }
@@ -519,10 +510,7 @@ mod tests {
     #[test]
     fn test_agent_url_default_scheme_and_port() {
         let backend = ReaperBackend::new();
-        assert_eq!(
-            backend.agent_url("node-42"),
-            "http://node-42:8443"
-        );
+        assert_eq!(backend.agent_url("node-42"), "http://node-42:8443");
     }
 
     #[test]
@@ -580,7 +568,10 @@ mod tests {
             working_dir: None,
         };
         let json = serde_json::to_string(&req).expect("serialize");
-        assert!(!json.contains("working_dir"), "None fields should be omitted");
+        assert!(
+            !json.contains("working_dir"),
+            "None fields should be omitted"
+        );
     }
 
     #[test]
@@ -700,7 +691,10 @@ mod tests {
         };
         match map_reaper_state(&status) {
             BackendJobStatus::Failed { message } => {
-                assert!(message.contains("137"), "exit code should appear in message: {message}");
+                assert!(
+                    message.contains("137"),
+                    "exit code should appear in message: {message}"
+                );
             }
             other => panic!("expected Failed, got {other:?}"),
         }
@@ -817,10 +811,7 @@ mod tests {
 
         let req = backend.build_job_request(&spec, &placement, 0).unwrap();
         let hostfile = &req.environment["WREN_HOSTFILE"];
-        assert_eq!(
-            hostfile,
-            "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4"
-        );
+        assert_eq!(hostfile, "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4");
     }
 
     #[test]

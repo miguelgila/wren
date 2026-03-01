@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use wren_core::QueuedJob;
 use chrono::{DateTime, Duration, Utc};
 use tracing::debug;
+use wren_core::QueuedJob;
 
 /// Tracks per-user/project resource usage and computes fair-share factors.
 pub struct FairShareManager {
@@ -69,11 +69,14 @@ impl FairShareManager {
     /// (before the next decay pass).
     pub fn record_usage(&mut self, user: &str, node_seconds: f64, gpu_seconds: f64) {
         debug!(user, node_seconds, gpu_seconds, "recording usage");
-        let record = self.usage.entry(user.to_string()).or_insert_with(|| UsageRecord {
-            node_seconds: 0.0,
-            gpu_seconds: 0.0,
-            last_updated: Utc::now(),
-        });
+        let record = self
+            .usage
+            .entry(user.to_string())
+            .or_insert_with(|| UsageRecord {
+                node_seconds: 0.0,
+                gpu_seconds: 0.0,
+                last_updated: Utc::now(),
+            });
         record.node_seconds += node_seconds;
         record.gpu_seconds += gpu_seconds;
         record.last_updated = Utc::now();
@@ -229,7 +232,13 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn make_job(name: &str, namespace: &str, priority: i32, nodes: u32, waited_secs: i64) -> QueuedJob {
+    fn make_job(
+        name: &str,
+        namespace: &str,
+        priority: i32,
+        nodes: u32,
+        waited_secs: i64,
+    ) -> QueuedJob {
         QueuedJob {
             name: name.to_string(),
             namespace: namespace.to_string(),
@@ -314,7 +323,10 @@ mod tests {
 
         let (_, ns, _) = &mgr.usage_summary()[0];
         // After one half-life, usage should be ~500.
-        assert!((ns - 500.0).abs() < 1.0, "expected ~500 after one half-life, got {ns}");
+        assert!(
+            (ns - 500.0).abs() < 1.0,
+            "expected ~500 after one half-life, got {ns}"
+        );
     }
 
     #[test]
@@ -330,7 +342,10 @@ mod tests {
 
         let (_, ns, _) = &mgr.usage_summary()[0];
         // After two half-lives, usage should be ~250.
-        assert!((ns - 250.0).abs() < 1.0, "expected ~250 after two half-lives, got {ns}");
+        assert!(
+            (ns - 250.0).abs() < 1.0,
+            "expected ~250 after two half-lives, got {ns}"
+        );
     }
 
     #[test]
@@ -370,16 +385,22 @@ mod tests {
     #[test]
     fn test_fair_share_factor_heavy_user_penalised() {
         let mut mgr = manager();
-        mgr.record_usage("alice", 100.0, 0.0);   // light user
-        mgr.record_usage("bob", 900.0, 0.0);     // heavy user
+        mgr.record_usage("alice", 100.0, 0.0); // light user
+        mgr.record_usage("bob", 900.0, 0.0); // heavy user
 
         let fa = mgr.fair_share_factor("alice");
         let fb = mgr.fair_share_factor("bob");
 
         // alice used less than average → positive factor
-        assert!(fa > 0.0, "alice (light user) should have positive factor, got {fa}");
+        assert!(
+            fa > 0.0,
+            "alice (light user) should have positive factor, got {fa}"
+        );
         // bob used more than average → negative factor
-        assert!(fb < 0.0, "bob (heavy user) should have negative factor, got {fb}");
+        assert!(
+            fb < 0.0,
+            "bob (heavy user) should have negative factor, got {fb}"
+        );
     }
 
     #[test]
@@ -390,7 +411,10 @@ mod tests {
         // "charlie" has no history — treated as 0 usage, equal share = 500.
         // charlie used 0 vs equal share 500, over total 1000 → deviation = (500-0)/1000 = 0.5
         let fc = mgr.fair_share_factor("charlie");
-        assert!(fc > 0.0, "unknown user should get a positive fair-share factor");
+        assert!(
+            fc > 0.0,
+            "unknown user should get a positive fair-share factor"
+        );
     }
 
     // --- Effective priority ---
@@ -399,7 +423,11 @@ mod tests {
     fn test_effective_priority_base_only_with_zero_weights() {
         let mgr = FairShareManager::new(
             Duration::days(7),
-            FairShareWeights { age: 0.0, size: 0.0, fair_share: 0.0 },
+            FairShareWeights {
+                age: 0.0,
+                size: 0.0,
+                fair_share: 0.0,
+            },
         );
         let job = make_job("j", "alice", 100, 1, 0);
         let ep = mgr.effective_priority(&job);
@@ -431,21 +459,30 @@ mod tests {
     fn test_age_factor_fresh_job_near_zero() {
         let job = make_job("j", "alice", 50, 1, 0); // submitted just now
         let age = FairShareManager::age_factor(&job);
-        assert!(age < 1.0, "brand-new job should have near-zero age factor, got {age}");
+        assert!(
+            age < 1.0,
+            "brand-new job should have near-zero age factor, got {age}"
+        );
     }
 
     #[test]
     fn test_age_factor_week_old_job_at_max() {
         let job = make_job("j", "alice", 50, 1, 7 * 24 * 3600); // 7 days ago
         let age = FairShareManager::age_factor(&job);
-        assert!((age - 1000.0).abs() < 1.0, "7-day-old job should have age factor ~1000, got {age}");
+        assert!(
+            (age - 1000.0).abs() < 1.0,
+            "7-day-old job should have age factor ~1000, got {age}"
+        );
     }
 
     #[test]
     fn test_age_factor_capped_at_1000() {
         let job = make_job("j", "alice", 50, 1, 30 * 24 * 3600); // 30 days ago
         let age = FairShareManager::age_factor(&job);
-        assert!((age - 1000.0).abs() < 1.0, "age factor should be capped at 1000, got {age}");
+        assert!(
+            (age - 1000.0).abs() < 1.0,
+            "age factor should be capped at 1000, got {age}"
+        );
     }
 
     // --- Size factor ---
@@ -454,7 +491,10 @@ mod tests {
     fn test_size_factor_single_node_at_max() {
         let job = make_job("j", "alice", 50, 1, 0);
         let sf = FairShareManager::size_factor(&job);
-        assert!((sf - 1000.0).abs() < 1.0, "1-node job should have size factor 1000, got {sf}");
+        assert!(
+            (sf - 1000.0).abs() < 1.0,
+            "1-node job should have size factor 1000, got {sf}"
+        );
     }
 
     #[test]
@@ -509,7 +549,10 @@ mod tests {
 
         // With a single user, equal_share == user_usage, deviation = 0.
         let fa = mgr.fair_share_factor("alice");
-        assert!(fa.abs() < 1e-6, "single user should have factor ~0, got {fa}");
+        assert!(
+            fa.abs() < 1e-6,
+            "single user should have factor ~0, got {fa}"
+        );
     }
 
     #[test]

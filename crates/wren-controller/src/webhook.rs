@@ -1,7 +1,7 @@
 use axum::{http::StatusCode, routing::get, routing::post, Json, Router};
-use wren_core::{WrenJobSpec, WrenQueueSpec, ExecutionBackendType, WalltimeDuration};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+use wren_core::{ExecutionBackendType, WalltimeDuration, WrenJobSpec, WrenQueueSpec};
 
 /// Admission review request/response types (simplified, matching K8s API).
 #[derive(Deserialize)]
@@ -69,9 +69,8 @@ pub fn validate_wrenjob(spec: &WrenJobSpec) -> Result<(), Vec<String>> {
     // Rule 4: container backend requires a container spec with non-empty image
     if spec.backend == ExecutionBackendType::Container {
         match &spec.container {
-            None => errors.push(
-                "backend 'container' requires a container spec to be provided".to_string(),
-            ),
+            None => errors
+                .push("backend 'container' requires a container spec to be provided".to_string()),
             Some(c) if c.image.trim().is_empty() => {
                 errors.push("container.image must not be empty".to_string())
             }
@@ -180,10 +179,7 @@ fn admission_denied(uid: String, errors: Vec<String>) -> AdmissionResponse {
         response: AdmissionResponseBody {
             uid,
             allowed: false,
-            status: Some(AdmissionStatus {
-                code: 422,
-                message,
-            }),
+            status: Some(AdmissionStatus { code: 422, message }),
         },
     }
 }
@@ -250,7 +246,7 @@ pub async fn serve_webhooks(port: u16) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wren_core::{ContainerSpec, JobDependency, DependencyType, ReaperSpec};
+    use wren_core::{ContainerSpec, DependencyType, JobDependency, ReaperSpec};
 
     fn container_spec(image: &str) -> ContainerSpec {
         ContainerSpec {
@@ -303,7 +299,9 @@ mod tests {
         let mut spec = valid_wrenjob_spec();
         spec.nodes = 0;
         let errs = validate_wrenjob(&spec).unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("nodes must be greater than 0")));
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("nodes must be greater than 0")));
     }
 
     #[test]
