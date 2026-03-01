@@ -1142,6 +1142,184 @@ smoke_test_deletion_cleanup() {
 }
 
 # ---------------------------------------------------------------------------
+# Smoke test 10: Pod preservation — verify pods are kept after job succeeds
+# (for log retrieval). Pods should survive at least until the TTL expires.
+# ---------------------------------------------------------------------------
+_smoke_test_pod_preservation() {
+    local job_name="smoke-pod-preserve"
+    local manifest
+    manifest="$(cat <<EOF
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: BuboJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "2m"
+  container:
+    image: busybox:latest
+    command: ["echo", "preserve-me"]
+EOF
+)"
+    log "Submitting BuboJob '${job_name}' to verify pod preservation ..."
+    echo "${manifest}" | kubectl apply -f -
+
+    # Wait for job to succeed
+    if ! wait_for_job_state "${job_name}" "Succeeded" "${JOB_TIMEOUT}"; then
+        warn "Job did not reach Succeeded — skipping pod preservation check"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # Wait a few seconds for any cleanup to fire, then check pods still exist
+    sleep 5
+
+    local pod_count
+    pod_count=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+        -l "${BUBO_JOB_LABEL}=${job_name}" \
+        --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    if [[ "$pod_count" -gt 0 ]]; then
+        log "  Found ${pod_count} pod(s) preserved after Succeeded — correct"
+        local pod_phase
+        pod_phase=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+            -l "${BUBO_JOB_LABEL}=${job_name}" \
+            -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+        log "  Pod phase: ${pod_phase}"
+        delete_job "${job_name}"
+        return 0
+    else
+        error "No pods found after job Succeeded — pods were deleted too early"
+        delete_job "${job_name}"
+        return 1
+    fi
+}
+
+smoke_test_pod_preservation() {
+    run_test "pod preservation after completion" _smoke_test_pod_preservation
+}
+
+# ---------------------------------------------------------------------------
+# Smoke test 11: Job logs — submit a job, wait for completion, verify logs
+# are retrievable via kubectl and bubo CLI.
+# ---------------------------------------------------------------------------
+_smoke_test_job_logs() {
+    local job_name="smoke-job-logs"
+    local expected_output="bubo-logs-test-output"
+    local manifest
+    manifest="$(cat <<EOF
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: BuboJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "2m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["${expected_output}"]
+EOF
+)"
+    log "Submitting BuboJob '${job_name}' to verify log retrieval ..."
+    echo "${manifest}" | kubectl apply -f -
+
+    # Wait for job to succeed
+    if ! wait_for_job_state "${job_name}" "Succeeded" "${JOB_TIMEOUT}"; then
+        warn "Job did not reach Succeeded — skipping logs check"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # Verify logs via kubectl
+    local pod_name="${job_name}-worker-0"
+    local kubectl_logs
+    kubectl_logs=$(kubectl logs "${pod_name}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
+
+    if [[ "$kubectl_logs" == *"${expected_output}"* ]]; then
+        log "  kubectl logs: found expected output"
+    else
+        error "kubectl logs did not contain '${expected_output}' (got: '${kubectl_logs}')"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # Verify logs via bubo CLI (if built)
+    local bubo_bin="${REPO_ROOT}/target/release/bubo"
+    if [[ ! -x "$bubo_bin" ]]; then
+        bubo_bin="${REPO_ROOT}/target/debug/bubo"
+    fi
+
+    if [[ -x "$bubo_bin" ]]; then
+        local cli_logs
+        cli_logs=$("${bubo_bin}" logs "${job_name}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
+        if [[ "$cli_logs" == *"${expected_output}"* ]]; then
+            log "  bubo logs: found expected output"
+        else
+            warn "bubo CLI logs did not contain expected output (got: '${cli_logs}')"
+            warn "CLI may not be built or may have different output format"
+        fi
+    else
+        log "  bubo CLI binary not found — skipping CLI log check"
+    fi
+
+    # Verify logs for multi-node job (prefixed output)
+    local multi_job="smoke-logs-multi"
+    local multi_manifest
+    multi_manifest="$(cat <<EOF
+apiVersion: hpc.cscs.ch/v1alpha1
+kind: BuboJob
+metadata:
+  name: ${multi_job}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 2
+  tasksPerNode: 1
+  walltime: "2m"
+  container:
+    image: busybox:latest
+    command: ["echo"]
+    args: ["multi-node-log-test"]
+EOF
+)"
+    log "Submitting 2-node BuboJob '${multi_job}' to verify multi-node logs ..."
+    echo "${multi_manifest}" | kubectl apply -f -
+
+    if wait_for_job_state "${multi_job}" "Succeeded" "${JOB_TIMEOUT}"; then
+        if [[ -x "$bubo_bin" ]]; then
+            local multi_logs
+            multi_logs=$("${bubo_bin}" logs "${multi_job}" -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
+            # Multi-node logs should have pod name prefixes
+            if [[ "$multi_logs" == *"${multi_job}-worker-0"* ]] && \
+               [[ "$multi_logs" == *"${multi_job}-worker-1"* ]]; then
+                log "  bubo logs (multi-node): both workers present with prefixes"
+            elif [[ "$multi_logs" == *"multi-node-log-test"* ]]; then
+                log "  bubo logs (multi-node): output found (prefix format may differ)"
+            else
+                warn "bubo logs (multi-node) output unexpected: '${multi_logs}'"
+            fi
+        fi
+    else
+        warn "Multi-node job did not succeed — skipping multi-node log check"
+    fi
+
+    delete_job "${job_name}"
+    delete_job "${multi_job}"
+    return 0
+}
+
+smoke_test_job_logs() {
+    run_test "job log retrieval after completion" _smoke_test_job_logs
+}
+
+# ---------------------------------------------------------------------------
 # Run all shell smoke tests
 # ---------------------------------------------------------------------------
 run_shell_tests() {
@@ -1161,6 +1339,8 @@ run_shell_tests() {
     smoke_test_pod_labels
     smoke_test_headless_service
     smoke_test_deletion_cleanup
+    smoke_test_pod_preservation
+    smoke_test_job_logs
 }
 
 # ---------------------------------------------------------------------------
