@@ -1,4 +1,4 @@
-use bubo_core::{MPIJobSpec, Placement};
+use bubo_core::{BuboJobSpec, Placement};
 use std::collections::HashMap;
 
 /// Generates an MPI hostfile from a placement.
@@ -18,12 +18,12 @@ pub fn generate_hostfile(placement: &Placement, tasks_per_node: u32) -> String {
 }
 
 /// Returns the total number of MPI ranks for this job.
-pub fn total_ranks(spec: &MPIJobSpec) -> u32 {
+pub fn total_ranks(spec: &BuboJobSpec) -> u32 {
     spec.nodes * spec.tasks_per_node
 }
 
 /// Generates the mpirun command prefix based on the MPI spec.
-pub fn mpirun_args(spec: &MPIJobSpec, hostfile_path: &str) -> Vec<String> {
+pub fn mpirun_args(spec: &BuboJobSpec, hostfile_path: &str) -> Vec<String> {
     let mpi = spec.mpi.as_ref();
     let impl_name = mpi
         .map(|m| m.implementation.as_str())
@@ -60,7 +60,7 @@ pub fn mpirun_args(spec: &MPIJobSpec, hostfile_path: &str) -> Vec<String> {
     args
 }
 
-/// Standard labels applied to all pods created for an MPIJob.
+/// Standard labels applied to all pods created for a BuboJob.
 pub fn job_labels(job_name: &str, role: &str, rank: Option<u32>) -> std::collections::BTreeMap<String, String> {
     let mut labels = std::collections::BTreeMap::new();
     labels.insert("app.kubernetes.io/managed-by".to_string(), "bubo".to_string());
@@ -118,7 +118,7 @@ pub fn generate_bare_metal_hostfile(nodes: &[String], tasks_per_node: u32) -> St
 /// - `cray-mpich`: generates `srun`-based arguments
 /// - `openmpi`: like the container variant but without `--allow-run-as-root`
 /// - `intel-mpi`: generates `mpiexec.hydra` arguments
-pub fn bare_metal_mpirun_args(spec: &MPIJobSpec, hostfile_path: &str) -> Vec<String> {
+pub fn bare_metal_mpirun_args(spec: &BuboJobSpec, hostfile_path: &str) -> Vec<String> {
     let mpi = spec.mpi.as_ref();
     let impl_name = mpi
         .map(|m| m.implementation.as_str())
@@ -177,7 +177,7 @@ pub fn bare_metal_mpirun_args(spec: &MPIJobSpec, hostfile_path: &str) -> Vec<Str
 /// `I_MPI_FABRICS_LIST` / `UCX_NET_DEVICES` (intel-mpi / openmpi).
 pub fn bare_metal_env_vars(
     job_name: &str,
-    spec: &MPIJobSpec,
+    spec: &BuboJobSpec,
     nodes: &[String],
     hostfile_path: &str,
 ) -> HashMap<String, String> {
@@ -227,7 +227,7 @@ pub fn bare_metal_env_vars(
 }
 
 /// Generates Slurm-compatible `srun` arguments for cray-mpich bare-metal execution.
-pub fn srun_args(spec: &MPIJobSpec, hostfile_path: &str) -> Vec<String> {
+pub fn srun_args(spec: &BuboJobSpec, hostfile_path: &str) -> Vec<String> {
     let mut args = vec![
         "srun".to_string(),
         "--nodes".to_string(),
@@ -260,8 +260,8 @@ mod tests {
         }
     }
 
-    fn make_spec(nodes: u32, tasks_per_node: u32) -> MPIJobSpec {
-        MPIJobSpec {
+    fn make_spec(nodes: u32, tasks_per_node: u32) -> BuboJobSpec {
+        BuboJobSpec {
             queue: "default".to_string(),
             priority: 50,
             walltime: None,
@@ -342,8 +342,8 @@ mod tests {
         names.iter().map(|s| s.to_string()).collect()
     }
 
-    fn make_cray_spec(nodes: u32, tasks_per_node: u32, iface: Option<&str>) -> MPIJobSpec {
-        MPIJobSpec {
+    fn make_cray_spec(nodes: u32, tasks_per_node: u32, iface: Option<&str>) -> BuboJobSpec {
+        BuboJobSpec {
             queue: "default".to_string(),
             priority: 50,
             walltime: None,
@@ -362,8 +362,8 @@ mod tests {
         }
     }
 
-    fn make_intel_spec(nodes: u32, tasks_per_node: u32, iface: Option<&str>) -> MPIJobSpec {
-        MPIJobSpec {
+    fn make_intel_spec(nodes: u32, tasks_per_node: u32, iface: Option<&str>) -> BuboJobSpec {
+        BuboJobSpec {
             queue: "default".to_string(),
             priority: 50,
             walltime: None,

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use bubo_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
-use bubo_core::{BuboError, MPIJobSpec, Placement};
+use bubo_core::{BuboError, BuboJobSpec, Placement};
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSpec, Service, ServicePort, ServiceSpec,
 };
@@ -103,7 +103,7 @@ impl ContainerBackend {
         &self,
         job_name: &str,
         namespace: &str,
-        spec: &MPIJobSpec,
+        spec: &BuboJobSpec,
         node_name: &str,
         rank: u32,
     ) -> Result<String, BuboError> {
@@ -199,7 +199,7 @@ impl ContainerBackend {
         &self,
         job_name: &str,
         namespace: &str,
-        spec: &MPIJobSpec,
+        spec: &BuboJobSpec,
         placement: &Placement,
     ) -> Result<String, BuboError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
@@ -284,7 +284,7 @@ impl ExecutionBackend for ContainerBackend {
         &self,
         job_name: &str,
         namespace: &str,
-        spec: &MPIJobSpec,
+        spec: &BuboJobSpec,
         placement: &Placement,
     ) -> Result<LaunchResult, BuboError> {
         info!(job = job_name, nodes = ?placement.nodes, "launching container-based MPI job");

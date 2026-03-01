@@ -20,7 +20,7 @@ struct Cli {
 enum Commands {
     /// Submit an MPI job from a YAML file
     Submit {
-        /// Path to the MPIJob YAML file
+        /// Path to the BuboJob YAML file
         file: String,
         /// Override the queue
         #[arg(short, long)]

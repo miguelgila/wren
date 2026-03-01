@@ -38,7 +38,7 @@ MANIFEST_DIR="${REPO_ROOT}/manifests"
 DOCKERFILE="${REPO_ROOT}/docker/Dockerfile.controller"
 KIND_CONFIG="${REPO_ROOT}/kind-config.yaml"
 
-# Pod label key used by the controller to associate pods with an MPIJob.
+# Pod label key used by the controller to associate pods with an BuboJob.
 BUBO_JOB_LABEL="bubo.io/job-name"
 
 # ---------------------------------------------------------------------------
@@ -277,9 +277,9 @@ collect_logs() {
         --sort-by='.lastTimestamp' \
         2>/dev/null > "${LOG_DIR}/test-namespace-events.log" || true
 
-    # MPIJob state
-    kubectl get mpijobs -n "${TEST_NAMESPACE}" -o yaml \
-        2>/dev/null > "${LOG_DIR}/mpijobs.yaml" || true
+    # BuboJob state
+    kubectl get bubojobs -n "${TEST_NAMESPACE}" -o yaml \
+        2>/dev/null > "${LOG_DIR}/bubojobs.yaml" || true
 
     # BuboQueue state
     kubectl get buboqueues -A -o yaml \
@@ -395,7 +395,7 @@ install_crds() {
     # Wait for CRDs to become established before proceeding
     log "Waiting for CRDs to be established ..."
     kubectl wait --for=condition=Established \
-        crd/mpijobs.hpc.cscs.ch \
+        crd/bubojobs.hpc.cscs.ch \
         --timeout=30s
     kubectl wait --for=condition=Established \
         crd/buboqueues.hpc.cscs.ch \
@@ -524,7 +524,7 @@ run_rust_tests() {
 # final summary. Each test cleans up after itself.
 # ---------------------------------------------------------------------------
 
-# Helper: wait for an MPIJob to reach a target state.
+# Helper: wait for an BuboJob to reach a target state.
 # Usage: wait_for_job_state <job-name> <target-states-pipe-separated> <timeout-s>
 # Returns 0 if the state is reached, 1 on timeout.
 wait_for_job_state() {
@@ -535,11 +535,11 @@ wait_for_job_state() {
     local state=""
 
     while true; do
-        state=$(kubectl get mpijob "${job_name}" \
+        state=$(kubectl get bubojob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.status.state}' 2>/dev/null || echo "")
 
-        log "  MPIJob '${job_name}' state: '${state:-<empty>}'"
+        log "  BuboJob '${job_name}' state: '${state:-<empty>}'"
 
         if [[ "$state" =~ ^(${target_pattern})$ ]]; then
             log "  Reached expected state: ${state}"
@@ -555,10 +555,10 @@ wait_for_job_state() {
     done
 }
 
-# Helper: delete an MPIJob quietly, ignore not-found errors.
+# Helper: delete an BuboJob quietly, ignore not-found errors.
 delete_job() {
     local job_name="$1"
-    kubectl delete mpijob "${job_name}" \
+    kubectl delete bubojob "${job_name}" \
         -n "${TEST_NAMESPACE}" \
         --ignore-not-found \
         --timeout=60s 2>/dev/null || true
@@ -572,7 +572,7 @@ _smoke_test_multinode_job() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -586,12 +586,12 @@ spec:
     command: ["sh", "-c", "echo hello-bubo && sleep 10"]
 EOF
 )"
-    log "Submitting 2-node MPIJob '${job_name}' ..."
+    log "Submitting 2-node BuboJob '${job_name}' ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Expect the job to leave Pending and reach Scheduling, Running, or Succeeded
     if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
-        kubectl describe mpijob "${job_name}" -n "${TEST_NAMESPACE}" || true
+        kubectl describe bubojob "${job_name}" -n "${TEST_NAMESPACE}" || true
         delete_job "${job_name}"
         return 1
     fi
@@ -740,7 +740,7 @@ _smoke_test_invalid_job() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -754,7 +754,7 @@ spec:
     command: ["echo", "this-should-not-run"]
 EOF
 )"
-    log "Submitting invalid MPIJob (nodes=0) '${job_name}' ..."
+    log "Submitting invalid BuboJob (nodes=0) '${job_name}' ..."
 
     # The API server may reject it via webhook, or the controller may set a
     # Failed status. Both outcomes are acceptable.
@@ -767,7 +767,7 @@ EOF
     local deadline=$(( $(date +%s) + 30 ))
     local state=""
     while true; do
-        state=$(kubectl get mpijob "${job_name}" \
+        state=$(kubectl get bubojob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.status.state}' 2>/dev/null || echo "")
         log "  Invalid job state: '${state:-<empty>}'"
@@ -805,7 +805,7 @@ _smoke_test_walltime_job() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -819,7 +819,7 @@ spec:
     command: ["sh", "-c", "echo starting && sleep 300"]
 EOF
 )"
-    log "Submitting short-walltime MPIJob (5s) '${job_name}' ..."
+    log "Submitting short-walltime BuboJob (5s) '${job_name}' ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Allow generous time: job must start, run, then be killed by walltime enforcement
@@ -828,7 +828,7 @@ EOF
     local state=""
 
     while true; do
-        state=$(kubectl get mpijob "${job_name}" \
+        state=$(kubectl get bubojob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.status.state}' 2>/dev/null || echo "")
         log "  Walltime job state: '${state:-<empty>}'"
@@ -842,7 +842,7 @@ EOF
         # If the controller fails the job for walltime via Failed state, also accept
         if [[ "$state" == "Failed" ]]; then
             local reason
-            reason=$(kubectl get mpijob "${job_name}" \
+            reason=$(kubectl get bubojob "${job_name}" \
                 -n "${TEST_NAMESPACE}" \
                 -o jsonpath='{.status.reason}' 2>/dev/null || echo "")
             if [[ "$reason" == *"walltime"* || "$reason" == *"Walltime"* ]]; then
@@ -881,11 +881,11 @@ _smoke_test_concurrent_jobs() {
     local job_names=("smoke-concurrent-1" "smoke-concurrent-2" "smoke-concurrent-3")
     local errors=0
 
-    log "Submitting 3 MPIJobs concurrently ..."
+    log "Submitting 3 BuboJobs concurrently ..."
     for job_name in "${job_names[@]}"; do
         cat <<EOF | kubectl apply -f - &
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -907,13 +907,13 @@ EOF
     # Verify all 3 jobs are tracked
     for job_name in "${job_names[@]}"; do
         local retrieved
-        retrieved=$(kubectl get mpijob "${job_name}" \
+        retrieved=$(kubectl get bubojob "${job_name}" \
             -n "${TEST_NAMESPACE}" \
             -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 
         if [[ "$retrieved" == "${job_name}" ]]; then
             local state
-            state=$(kubectl get mpijob "${job_name}" \
+            state=$(kubectl get bubojob "${job_name}" \
                 -n "${TEST_NAMESPACE}" \
                 -o jsonpath='{.status.state}' 2>/dev/null || echo "<no state>")
             log "  ${job_name}: found, state='${state}'"
@@ -944,7 +944,7 @@ _smoke_test_pod_labels() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -958,7 +958,7 @@ spec:
     command: ["sh", "-c", "echo hello && sleep 60"]
 EOF
 )"
-    log "Submitting MPIJob '${job_name}' to check pod labels ..."
+    log "Submitting BuboJob '${job_name}' to check pod labels ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for the job to leave Pending
@@ -1011,7 +1011,7 @@ _smoke_test_headless_service() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -1025,7 +1025,7 @@ spec:
     command: ["sh", "-c", "echo hello && sleep 60"]
 EOF
 )"
-    log "Submitting MPIJob '${job_name}' to check headless service ..."
+    log "Submitting BuboJob '${job_name}' to check headless service ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for job to start
@@ -1077,7 +1077,7 @@ _smoke_test_deletion_cleanup() {
     local manifest
     manifest="$(cat <<EOF
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
@@ -1091,23 +1091,23 @@ spec:
     command: ["sh", "-c", "sleep 300"]
 EOF
 )"
-    log "Submitting MPIJob '${job_name}' for deletion test ..."
+    log "Submitting BuboJob '${job_name}' for deletion test ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Give the controller a moment to create resources
     sleep 5
 
-    log "Deleting MPIJob '${job_name}' ..."
-    kubectl delete mpijob "${job_name}" \
+    log "Deleting BuboJob '${job_name}' ..."
+    kubectl delete bubojob "${job_name}" \
         -n "${TEST_NAMESPACE}" \
         --ignore-not-found \
         --timeout=60s
 
-    # Verify the MPIJob is gone
-    if kubectl get mpijob "${job_name}" -n "${TEST_NAMESPACE}" &>/dev/null; then
-        warn "MPIJob '${job_name}' still exists after deletion — finalizer may be pending"
+    # Verify the BuboJob is gone
+    if kubectl get bubojob "${job_name}" -n "${TEST_NAMESPACE}" &>/dev/null; then
+        warn "BuboJob '${job_name}' still exists after deletion — finalizer may be pending"
     else
-        log "  MPIJob confirmed deleted"
+        log "  BuboJob confirmed deleted"
     fi
 
     # Verify pods are cleaned up

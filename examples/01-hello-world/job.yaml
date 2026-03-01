@@ -1,7 +1,7 @@
 # Simplest possible Bubo job: single-node echo.
 # This is the "hello world" — verifies the controller is working.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: hello-bubo
 spec:

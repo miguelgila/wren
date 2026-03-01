@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use bubo_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
-use bubo_core::{BuboError, MPIJobSpec, Placement};
+use bubo_core::{BuboError, BuboJobSpec, Placement};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -231,7 +231,7 @@ impl ReaperBackend {
     /// Build the job request for a specific node, injecting MPI environment variables.
     fn build_job_request(
         &self,
-        spec: &MPIJobSpec,
+        spec: &BuboJobSpec,
         placement: &Placement,
         rank: u32,
     ) -> Result<ReaperJobRequest, BuboError> {
@@ -282,7 +282,7 @@ impl ExecutionBackend for ReaperBackend {
         &self,
         job_name: &str,
         _namespace: &str,
-        spec: &MPIJobSpec,
+        spec: &BuboJobSpec,
         placement: &Placement,
     ) -> Result<LaunchResult, BuboError> {
         info!(
@@ -453,7 +453,7 @@ fn map_reaper_state(status: &ReaperJobStatus) -> BackendJobStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bubo_core::{ExecutionBackendType, MPIJobSpec};
+    use bubo_core::{ExecutionBackendType, BuboJobSpec};
 
     // -------------------------------------------------------------------------
     // Helpers
@@ -466,12 +466,12 @@ mod tests {
         }
     }
 
-    fn make_reaper_spec(nodes: u32, tasks_per_node: u32) -> MPIJobSpec {
+    fn make_reaper_spec(nodes: u32, tasks_per_node: u32) -> BuboJobSpec {
         use bubo_core::crd::ReaperSpec;
         let mut env = HashMap::new();
         env.insert("SCRATCH".to_string(), "/scratch/project".to_string());
 
-        MPIJobSpec {
+        BuboJobSpec {
             queue: "default".to_string(),
             priority: 50,
             walltime: None,
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn test_build_job_request_error_without_reaper_spec() {
         let backend = ReaperBackend::new();
-        let spec = MPIJobSpec {
+        let spec = BuboJobSpec {
             queue: "default".to_string(),
             priority: 50,
             walltime: None,

@@ -9,9 +9,9 @@ kind: ClusterRole
 metadata:
   name: bubo-controller
 rules:
-  # MPIJob CRD access
+  # BuboJob CRD access
   - apiGroups: ["hpc.cscs.ch"]
-    resources: ["mpijobs", "mpijobs/status"]
+    resources: ["bubojobs", "bubojobs/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # BuboQueue CRD access
   - apiGroups: ["hpc.cscs.ch"]

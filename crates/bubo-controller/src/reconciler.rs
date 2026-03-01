@@ -1,6 +1,6 @@
 use bubo_core::backend::{BackendJobStatus, ExecutionBackend};
 use bubo_core::{
-    BuboError, ClusterState, JobState, MPIJob, MPIJobStatus, WalltimeDuration,
+    BuboError, BuboJob, BuboJobStatus, ClusterState, JobState, WalltimeDuration,
 };
 use bubo_scheduler::gang::GangScheduler;
 use kube::api::{Patch, PatchParams};
@@ -21,8 +21,8 @@ pub struct ReconcilerContext {
     pub reservations: RwLock<ReservationManager>,
 }
 
-/// Reconcile a single MPIJob. Called by the controller whenever the resource changes.
-pub async fn reconcile(job: &MPIJob, ctx: &ReconcilerContext) -> Result<(), BuboError> {
+/// Reconcile a single BuboJob. Called by the controller whenever the resource changes.
+pub async fn reconcile(job: &BuboJob, ctx: &ReconcilerContext) -> Result<(), BuboError> {
     let name = job.metadata.name.as_deref().unwrap_or("unknown");
     let namespace = job
         .metadata
@@ -37,7 +37,7 @@ pub async fn reconcile(job: &MPIJob, ctx: &ReconcilerContext) -> Result<(), Bubo
         job = name,
         namespace,
         state = %status.state,
-        "reconciling MPIJob"
+        "reconciling BuboJob"
     );
 
     match status.state {
@@ -54,7 +54,7 @@ pub async fn reconcile(job: &MPIJob, ctx: &ReconcilerContext) -> Result<(), Bubo
 async fn handle_pending(
     name: &str,
     namespace: &str,
-    spec: &bubo_core::MPIJobSpec,
+    spec: &bubo_core::BuboJobSpec,
     ctx: &ReconcilerContext,
 ) -> Result<(), BuboError> {
     // Validate the job spec
@@ -91,7 +91,7 @@ async fn handle_pending(
 async fn handle_scheduling(
     name: &str,
     namespace: &str,
-    spec: &bubo_core::MPIJobSpec,
+    spec: &bubo_core::BuboJobSpec,
     ctx: &ReconcilerContext,
 ) -> Result<(), BuboError> {
     // Attempt gang scheduling
@@ -161,7 +161,7 @@ async fn handle_scheduling(
                     );
 
                     // Update status to Running with assigned nodes
-                    let api: Api<MPIJob> = Api::namespaced(ctx.client.clone(), namespace);
+                    let api: Api<BuboJob> = Api::namespaced(ctx.client.clone(), namespace);
                     let now = chrono::Utc::now().to_rfc3339();
                     let status = serde_json::json!({
                         "status": {
@@ -238,8 +238,8 @@ async fn handle_scheduling(
 async fn handle_running(
     name: &str,
     namespace: &str,
-    spec: &bubo_core::MPIJobSpec,
-    job_status: &MPIJobStatus,
+    spec: &bubo_core::BuboJobSpec,
+    job_status: &BuboJobStatus,
     ctx: &ReconcilerContext,
 ) -> Result<(), BuboError> {
     // Check backend status
@@ -248,7 +248,7 @@ async fn handle_running(
     match backend_status {
         BackendJobStatus::Succeeded => {
             info!(job = name, "job completed successfully");
-            let api: Api<MPIJob> = Api::namespaced(ctx.client.clone(), namespace);
+            let api: Api<BuboJob> = Api::namespaced(ctx.client.clone(), namespace);
             let now = chrono::Utc::now().to_rfc3339();
             let status = serde_json::json!({
                 "status": {
@@ -310,7 +310,7 @@ async fn handle_running(
         }
         BackendJobStatus::Launching { ready, total } => {
             // Update ready worker count
-            let api: Api<MPIJob> = Api::namespaced(ctx.client.clone(), namespace);
+            let api: Api<BuboJob> = Api::namespaced(ctx.client.clone(), namespace);
             let status = serde_json::json!({
                 "status": {
                     "readyWorkers": ready,
@@ -368,7 +368,7 @@ async fn handle_terminal(
     Ok(())
 }
 
-/// Helper to patch the MPIJob status subresource.
+/// Helper to patch the BuboJob status subresource.
 async fn update_status(
     name: &str,
     namespace: &str,
@@ -376,7 +376,7 @@ async fn update_status(
     message: Option<&str>,
     ctx: &ReconcilerContext,
 ) -> Result<(), BuboError> {
-    let api: Api<MPIJob> = Api::namespaced(ctx.client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(ctx.client.clone(), namespace);
     let status = serde_json::json!({
         "status": {
             "state": state,

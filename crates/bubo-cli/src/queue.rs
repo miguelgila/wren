@@ -1,32 +1,32 @@
 use anyhow::{Context, Result};
-use bubo_core::MPIJob;
+use bubo_core::BuboJob;
 use kube::{
     api::{Api, ListParams},
     Client,
 };
 
-/// List MPIJobs with optional queue and namespace filters, formatted as a table.
+/// List BuboJobs with optional queue and namespace filters, formatted as a table.
 pub async fn run(queue: Option<&str>, namespace: Option<&str>) -> Result<()> {
     let client = Client::try_default()
         .await
         .context("failed to create Kubernetes client")?;
 
-    let jobs: Vec<MPIJob> = if let Some(ns) = namespace {
-        let api: Api<MPIJob> = Api::namespaced(client, ns);
+    let jobs: Vec<BuboJob> = if let Some(ns) = namespace {
+        let api: Api<BuboJob> = Api::namespaced(client, ns);
         api.list(&ListParams::default())
             .await
-            .context("failed to list MPIJobs")?
+            .context("failed to list BuboJobs")?
             .items
     } else {
-        let api: Api<MPIJob> = Api::all(client);
+        let api: Api<BuboJob> = Api::all(client);
         api.list(&ListParams::default())
             .await
-            .context("failed to list MPIJobs")?
+            .context("failed to list BuboJobs")?
             .items
     };
 
     // Filter by queue if requested
-    let jobs: Vec<&MPIJob> = if let Some(q) = queue {
+    let jobs: Vec<&BuboJob> = if let Some(q) = queue {
         jobs.iter().filter(|j| j.spec.queue == q).collect()
     } else {
         jobs.iter().collect()

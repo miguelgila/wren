@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::crd::MPIJobSpec;
+use crate::crd::BuboJobSpec;
 use crate::error::BuboError;
 use crate::types::Placement;
 
@@ -24,7 +24,7 @@ pub trait ExecutionBackend: Send + Sync {
         &self,
         job_name: &str,
         namespace: &str,
-        spec: &MPIJobSpec,
+        spec: &BuboJobSpec,
         placement: &Placement,
     ) -> Result<LaunchResult, BuboError>;
 

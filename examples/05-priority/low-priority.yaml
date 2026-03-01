@@ -1,6 +1,6 @@
 # Low-priority background job.
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: low-priority-job
 spec:

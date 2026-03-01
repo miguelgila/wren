@@ -1,5 +1,5 @@
 apiVersion: hpc.cscs.ch/v1alpha1
-kind: MPIJob
+kind: BuboJob
 metadata:
   name: distributed-training
 spec:

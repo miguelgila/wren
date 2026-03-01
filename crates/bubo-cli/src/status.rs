@@ -1,22 +1,22 @@
 use anyhow::{Context, Result};
-use bubo_core::MPIJob;
+use bubo_core::BuboJob;
 use kube::{api::Api, Client};
 
-/// Show detailed status information about a specific MPIJob.
+/// Show detailed status information about a specific BuboJob.
 pub async fn run(job: &str, namespace: &str) -> Result<()> {
     let client = Client::try_default()
         .await
         .context("failed to create Kubernetes client")?;
 
-    let api: Api<MPIJob> = Api::namespaced(client, namespace);
+    let api: Api<BuboJob> = Api::namespaced(client, namespace);
 
-    let mpijob = api
+    let bubojob = api
         .get(job)
         .await
         .with_context(|| format!("job {job} not found in namespace {namespace}"))?;
 
-    let spec = &mpijob.spec;
-    let status = mpijob.status.as_ref();
+    let spec = &bubojob.spec;
+    let status = bubojob.status.as_ref();
 
     println!("Name:        {}", job);
     println!("Namespace:   {}", namespace);

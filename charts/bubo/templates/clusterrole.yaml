@@ -5,9 +5,9 @@ metadata:
   labels:
     {{- include "bubo.labels" . | nindent 4 }}
 rules:
-  # MPIJob CRD — full lifecycle management
+  # BuboJob CRD — full lifecycle management
   - apiGroups: ["hpc.cscs.ch"]
-    resources: ["mpijobs", "mpijobs/status"]
+    resources: ["bubojobs", "bubojobs/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # BuboQueue CRD — read queues, write status
   - apiGroups: ["hpc.cscs.ch"]

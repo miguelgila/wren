@@ -4,22 +4,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::*;
 
-/// MPIJob is the primary user-facing CRD for submitting multi-node MPI workloads.
+/// BuboJob is the primary user-facing CRD for submitting multi-node MPI workloads.
 /// This is the Bubo equivalent of `sbatch`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "hpc.cscs.ch",
     version = "v1alpha1",
-    kind = "MPIJob",
+    kind = "BuboJob",
     namespaced,
-    status = "MPIJobStatus",
+    status = "BuboJobStatus",
     printcolumn = r#"{"name":"State","type":"string","jsonPath":".status.state"}"#,
     printcolumn = r#"{"name":"Nodes","type":"integer","jsonPath":".spec.nodes"}"#,
     printcolumn = r#"{"name":"Queue","type":"string","jsonPath":".spec.queue"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
-pub struct MPIJobSpec {
+pub struct BuboJobSpec {
     /// Queue to submit this job to
     #[serde(default = "default_queue")]
     pub queue: String,
@@ -148,7 +148,7 @@ pub enum DependencyType {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct MPIJobStatus {
+pub struct BuboJobStatus {
     /// Current state of the job
     #[serde(default)]
     pub state: JobState,
@@ -274,9 +274,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mpijob_spec_defaults() {
+    fn test_bubojob_spec_defaults() {
         let json = r#"{"nodes": 4}"#;
-        let spec: MPIJobSpec = serde_json::from_str(json).unwrap();
+        let spec: BuboJobSpec = serde_json::from_str(json).unwrap();
         assert_eq!(spec.queue, "default");
         assert_eq!(spec.priority, 50);
         assert_eq!(spec.tasks_per_node, 1);
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mpijob_spec_full() {
+    fn test_bubojob_spec_full() {
         let yaml = r#"
             nodes: 8
             queue: gpu
@@ -298,7 +298,7 @@ mod tests {
               - type: afterOk
                 job: previous-job
         "#;
-        let spec: MPIJobSpec = serde_yaml::from_str(yaml).unwrap();
+        let spec: BuboJobSpec = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(spec.nodes, 8);
         assert_eq!(spec.queue, "gpu");
         assert_eq!(spec.priority, 200);
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_job_status_defaults() {
-        let status = MPIJobStatus::default();
+        let status = BuboJobStatus::default();
         assert_eq!(status.state, JobState::Pending);
         assert!(status.message.is_none());
         assert!(status.assigned_nodes.is_empty());

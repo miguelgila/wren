@@ -6,7 +6,7 @@ use kube::{
 };
 use tracing::debug;
 
-/// Fetch logs from pods belonging to an MPIJob, with optional rank and follow support.
+/// Fetch logs from pods belonging to a BuboJob, with optional rank and follow support.
 pub async fn run(job: &str, rank: Option<u32>, follow: bool, namespace: &str) -> Result<()> {
     let client = Client::try_default()
         .await

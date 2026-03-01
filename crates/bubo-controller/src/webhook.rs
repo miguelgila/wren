@@ -1,5 +1,5 @@
 use axum::{http::StatusCode, routing::get, routing::post, Json, Router};
-use bubo_core::{BuboQueueSpec, ExecutionBackendType, MPIJobSpec, WalltimeDuration};
+use bubo_core::{BuboJobSpec, BuboQueueSpec, ExecutionBackendType, WalltimeDuration};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -42,8 +42,8 @@ pub struct AdmissionStatus {
     pub message: String,
 }
 
-/// Validate an MPIJobSpec. Returns Ok(()) or Err with a list of descriptive messages.
-pub fn validate_mpijob(spec: &MPIJobSpec) -> Result<(), Vec<String>> {
+/// Validate an BuboJobSpec. Returns Ok(()) or Err with a list of descriptive messages.
+pub fn validate_bubojob(spec: &BuboJobSpec) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
 
     // Rule 1: nodes must be > 0
@@ -188,19 +188,19 @@ fn admission_denied(uid: String, errors: Vec<String>) -> AdmissionResponse {
     }
 }
 
-async fn validate_mpijob_handler(
-    Json(review): Json<AdmissionReview<MPIJobSpec>>,
+async fn validate_bubojob_handler(
+    Json(review): Json<AdmissionReview<BuboJobSpec>>,
 ) -> (StatusCode, Json<AdmissionResponse>) {
     let uid = review.request.uid.clone();
     let spec = &review.request.object;
 
-    match validate_mpijob(spec) {
+    match validate_bubojob(spec) {
         Ok(()) => {
-            info!(uid, "MPIJob admission: allowed");
+            info!(uid, "BuboJob admission: allowed");
             (StatusCode::OK, Json(admission_allowed(uid)))
         }
         Err(errors) => {
-            warn!(uid, ?errors, "MPIJob admission: denied");
+            warn!(uid, ?errors, "BuboJob admission: denied");
             (StatusCode::OK, Json(admission_denied(uid, errors)))
         }
     }
@@ -231,7 +231,7 @@ async fn health_handler() -> &'static str {
 /// Build an axum Router for the webhook endpoints.
 pub fn webhook_router() -> Router {
     Router::new()
-        .route("/validate/mpijob", post(validate_mpijob_handler))
+        .route("/validate/bubojob", post(validate_bubojob_handler))
         .route("/validate/buboqueue", post(validate_buboqueue_handler))
         .route("/healthz", get(health_handler))
 }
@@ -264,8 +264,8 @@ mod tests {
         }
     }
 
-    fn valid_mpijob_spec() -> MPIJobSpec {
-        MPIJobSpec {
+    fn valid_bubojob_spec() -> BuboJobSpec {
+        BuboJobSpec {
             queue: "default".to_string(),
             priority: 50,
             walltime: None,
@@ -291,64 +291,64 @@ mod tests {
         }
     }
 
-    // --- MPIJob tests ---
+    // --- BuboJob tests ---
 
     #[test]
-    fn test_mpijob_valid_container() {
-        assert!(validate_mpijob(&valid_mpijob_spec()).is_ok());
+    fn test_bubojob_valid_container() {
+        assert!(validate_bubojob(&valid_bubojob_spec()).is_ok());
     }
 
     #[test]
-    fn test_mpijob_nodes_zero() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_nodes_zero() {
+        let mut spec = valid_bubojob_spec();
         spec.nodes = 0;
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("nodes must be greater than 0")));
     }
 
     #[test]
-    fn test_mpijob_tasks_per_node_zero() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_tasks_per_node_zero() {
+        let mut spec = valid_bubojob_spec();
         spec.tasks_per_node = 0;
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("tasksPerNode")));
     }
 
     #[test]
-    fn test_mpijob_invalid_walltime() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_invalid_walltime() {
+        let mut spec = valid_bubojob_spec();
         spec.walltime = Some("4x".to_string());
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("walltime")));
     }
 
     #[test]
-    fn test_mpijob_valid_walltime() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_valid_walltime() {
+        let mut spec = valid_bubojob_spec();
         spec.walltime = Some("2h30m".to_string());
-        assert!(validate_mpijob(&spec).is_ok());
+        assert!(validate_bubojob(&spec).is_ok());
     }
 
     #[test]
-    fn test_mpijob_container_backend_missing_spec() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_container_backend_missing_spec() {
+        let mut spec = valid_bubojob_spec();
         spec.backend = ExecutionBackendType::Container;
         spec.container = None;
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("container spec")));
     }
 
     #[test]
-    fn test_mpijob_container_backend_empty_image() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_container_backend_empty_image() {
+        let mut spec = valid_bubojob_spec();
         spec.container = Some(container_spec("  "));
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("container.image")));
     }
 
     #[test]
-    fn test_mpijob_reaper_backend_valid() {
-        let spec = MPIJobSpec {
+    fn test_bubojob_reaper_backend_valid() {
+        let spec = BuboJobSpec {
             backend: ExecutionBackendType::Reaper,
             container: None,
             reaper: Some(ReaperSpec {
@@ -356,26 +356,26 @@ mod tests {
                 environment: Default::default(),
                 working_dir: None,
             }),
-            ..valid_mpijob_spec()
+            ..valid_bubojob_spec()
         };
-        assert!(validate_mpijob(&spec).is_ok());
+        assert!(validate_bubojob(&spec).is_ok());
     }
 
     #[test]
-    fn test_mpijob_reaper_backend_missing_spec() {
-        let spec = MPIJobSpec {
+    fn test_bubojob_reaper_backend_missing_spec() {
+        let spec = BuboJobSpec {
             backend: ExecutionBackendType::Reaper,
             container: None,
             reaper: None,
-            ..valid_mpijob_spec()
+            ..valid_bubojob_spec()
         };
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("reaper spec")));
     }
 
     #[test]
-    fn test_mpijob_reaper_backend_empty_script() {
-        let spec = MPIJobSpec {
+    fn test_bubojob_reaper_backend_empty_script() {
+        let spec = BuboJobSpec {
             backend: ExecutionBackendType::Reaper,
             container: None,
             reaper: Some(ReaperSpec {
@@ -383,69 +383,69 @@ mod tests {
                 environment: Default::default(),
                 working_dir: None,
             }),
-            ..valid_mpijob_spec()
+            ..valid_bubojob_spec()
         };
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("reaper.script")));
     }
 
     #[test]
-    fn test_mpijob_priority_out_of_range_high() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_priority_out_of_range_high() {
+        let mut spec = valid_bubojob_spec();
         spec.priority = 10001;
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("priority")));
     }
 
     #[test]
-    fn test_mpijob_priority_out_of_range_low() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_priority_out_of_range_low() {
+        let mut spec = valid_bubojob_spec();
         spec.priority = -10001;
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("priority")));
     }
 
     #[test]
-    fn test_mpijob_priority_boundary_values_valid() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_priority_boundary_values_valid() {
+        let mut spec = valid_bubojob_spec();
         spec.priority = -10000;
-        assert!(validate_mpijob(&spec).is_ok());
+        assert!(validate_bubojob(&spec).is_ok());
         spec.priority = 10000;
-        assert!(validate_mpijob(&spec).is_ok());
+        assert!(validate_bubojob(&spec).is_ok());
     }
 
     #[test]
-    fn test_mpijob_empty_queue() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_empty_queue() {
+        let mut spec = valid_bubojob_spec();
         spec.queue = "  ".to_string();
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("queue")));
     }
 
     #[test]
-    fn test_mpijob_empty_dependency_job_name() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_empty_dependency_job_name() {
+        let mut spec = valid_bubojob_spec();
         spec.dependencies = vec![JobDependency {
             dep_type: DependencyType::AfterOk,
             job: "".to_string(),
         }];
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("dependencies[0].job")));
     }
 
     #[test]
-    fn test_mpijob_valid_dependency() {
-        let mut spec = valid_mpijob_spec();
+    fn test_bubojob_valid_dependency() {
+        let mut spec = valid_bubojob_spec();
         spec.dependencies = vec![JobDependency {
             dep_type: DependencyType::AfterOk,
             job: "previous-sim".to_string(),
         }];
-        assert!(validate_mpijob(&spec).is_ok());
+        assert!(validate_bubojob(&spec).is_ok());
     }
 
     #[test]
-    fn test_mpijob_multiple_errors_collected() {
-        let spec = MPIJobSpec {
+    fn test_bubojob_multiple_errors_collected() {
+        let spec = BuboJobSpec {
             queue: "".to_string(),
             priority: 99999,
             walltime: Some("bad".to_string()),
@@ -458,7 +458,7 @@ mod tests {
             topology: None,
             dependencies: vec![],
         };
-        let errs = validate_mpijob(&spec).unwrap_err();
+        let errs = validate_bubojob(&spec).unwrap_err();
         assert!(errs.len() >= 4, "expected multiple errors, got: {:?}", errs);
     }
 

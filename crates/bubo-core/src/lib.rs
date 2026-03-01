@@ -5,8 +5,8 @@ pub mod types;
 
 // Re-export commonly used items
 pub use crd::{
-    BuboQueue, BuboQueueSpec, ContainerSpec, DependencyType, EnvVar, JobDependency, MPIJob,
-    MPIJobSpec, MPIJobStatus, MPISpec, ReaperSpec, ResourceRequirements, TopologySpec, VolumeMount,
+    BuboJob, BuboJobSpec, BuboJobStatus, BuboQueue, BuboQueueSpec, ContainerSpec, DependencyType,
+    EnvVar, JobDependency, MPISpec, ReaperSpec, ResourceRequirements, TopologySpec, VolumeMount,
 };
 pub use error::{BuboError, Result};
 pub use types::{

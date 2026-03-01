@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Execution backend type for an MPIJob.
+/// Execution backend type for a BuboJob.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionBackendType {
@@ -11,7 +11,7 @@ pub enum ExecutionBackendType {
     Reaper,
 }
 
-/// State of an MPIJob in its lifecycle.
+/// State of a BuboJob in its lifecycle.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq, Default)]
 pub enum JobState {
     #[default]

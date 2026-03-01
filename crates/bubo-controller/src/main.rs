@@ -1,4 +1,4 @@
-use bubo_core::{BuboError, ClusterState, MPIJob};
+use bubo_core::{BuboError, BuboJob, ClusterState};
 use futures::StreamExt;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
@@ -115,18 +115,18 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Start the MPIJob controller
-    let mpijob_api: Api<MPIJob> = Api::all(client.clone());
+    // Start the BuboJob controller
+    let bubojob_api: Api<BuboJob> = Api::all(client.clone());
 
-    info!("starting MPIJob controller");
-    Controller::new(mpijob_api, Config::default())
+    info!("starting BuboJob controller");
+    Controller::new(bubojob_api, Config::default())
         .shutdown_on_signal()
         .run(
-            |job: Arc<MPIJob>, ctx: Arc<ReconcilerContext>| async move {
+            |job: Arc<BuboJob>, ctx: Arc<ReconcilerContext>| async move {
                 reconciler::reconcile(&job, &ctx).await?;
                 Ok(Action::requeue(std::time::Duration::from_secs(30)))
             },
-            |_job: Arc<MPIJob>, error: &BuboError, _ctx: Arc<ReconcilerContext>| {
+            |_job: Arc<BuboJob>, error: &BuboError, _ctx: Arc<ReconcilerContext>| {
                 error!(error = %error, "controller error policy triggered");
                 Action::requeue(std::time::Duration::from_secs(5))
             },

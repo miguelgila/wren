@@ -19,7 +19,7 @@ use kube::{
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
-use bubo_core::crd::{BuboQueue, BuboQueueSpec, ContainerSpec, MPIJob, MPIJobSpec};
+use bubo_core::crd::{BuboJob, BuboJobSpec, BuboQueue, BuboQueueSpec, ContainerSpec};
 use bubo_core::types::{ExecutionBackendType, JobState};
 
 // ---------------------------------------------------------------------------
@@ -52,15 +52,15 @@ async fn skip_if_no_cluster() -> bool {
     false
 }
 
-/// Build a minimal `MPIJob` object suitable for testing.
-fn build_mpijob(name: &str, namespace: &str, nodes: u32) -> MPIJob {
-    MPIJob {
+/// Build a minimal `BuboJob` object suitable for testing.
+fn build_bubojob(name: &str, namespace: &str, nodes: u32) -> BuboJob {
+    BuboJob {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: MPIJobSpec {
+        spec: BuboJobSpec {
             nodes,
             queue: "default".to_string(),
             priority: 50,
@@ -104,15 +104,15 @@ fn build_buboqueue(name: &str, namespace: &str, max_nodes: u32) -> BuboQueue {
     }
 }
 
-/// Create an `MPIJob` in the cluster, returning the created object.
-async fn create_test_mpijob(
+/// Create an `BuboJob` in the cluster, returning the created object.
+async fn create_test_bubojob(
     client: Client,
     name: &str,
     namespace: &str,
     nodes: u32,
-) -> anyhow::Result<MPIJob> {
-    let api: Api<MPIJob> = Api::namespaced(client, namespace);
-    let job = build_mpijob(name, namespace, nodes);
+) -> anyhow::Result<BuboJob> {
+    let api: Api<BuboJob> = Api::namespaced(client, namespace);
+    let job = build_bubojob(name, namespace, nodes);
     let created = api.create(&PostParams::default(), &job).await?;
     Ok(created)
 }
@@ -130,7 +130,7 @@ async fn create_test_buboqueue(
     Ok(created)
 }
 
-/// Poll the `MPIJob` status until `.status.state` matches `expected`, or timeout elapses.
+/// Poll the `BuboJob` status until `.status.state` matches `expected`, or timeout elapses.
 ///
 /// Returns `true` if the expected state was reached, `false` on timeout.
 async fn wait_for_job_state(
@@ -140,7 +140,7 @@ async fn wait_for_job_state(
     expected: JobState,
     poll_timeout: Duration,
 ) -> bool {
-    let api: Api<MPIJob> = Api::namespaced(client, namespace);
+    let api: Api<BuboJob> = Api::namespaced(client, namespace);
     let deadline = timeout(poll_timeout, async {
         loop {
             match api.get(name).await {
@@ -163,9 +163,9 @@ async fn wait_for_job_state(
     matches!(deadline, Ok(true))
 }
 
-/// Delete an `MPIJob` and wait until it is gone from the API (up to 30 s).
+/// Delete an `BuboJob` and wait until it is gone from the API (up to 30 s).
 async fn cleanup_job(client: Client, name: &str, namespace: &str) -> anyhow::Result<()> {
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     let _ = api.delete(name, &DeleteParams::default()).await;
 
     // Wait for deletion
@@ -202,37 +202,37 @@ async fn cleanup_queue(client: Client, name: &str, namespace: &str) -> anyhow::R
     Ok(())
 }
 
-/// Verify that both `MPIJob` and `BuboQueue` CRDs are registered with the API server.
+/// Verify that both `BuboJob` and `BuboQueue` CRDs are registered with the API server.
 async fn ensure_crds_installed(client: Client) -> bool {
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let mpijob_exists = crd_api
-        .get("mpijobs.hpc.cscs.ch")
+    let bubojob_exists = crd_api
+        .get("bubojobs.hpc.cscs.ch")
         .await
         .is_ok();
     let queue_exists = crd_api
         .get("buboqueues.hpc.cscs.ch")
         .await
         .is_ok();
-    mpijob_exists && queue_exists
+    bubojob_exists && queue_exists
 }
 
 // ---------------------------------------------------------------------------
 // CRD-level tests
 // ---------------------------------------------------------------------------
 
-/// Verify the `MPIJob` CRD is registered in the cluster.
+/// Verify the `BuboJob` CRD is registered in the cluster.
 #[tokio::test]
 #[ignore]
-async fn test_mpijob_crd_registered() {
+async fn test_bubojob_crd_registered() {
     if skip_if_no_cluster().await {
         return;
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("mpijobs.hpc.cscs.ch").await;
+    let result = crd_api.get("bubojobs.hpc.cscs.ch").await;
     assert!(
         result.is_ok(),
-        "MPIJob CRD not found — apply manifests/crds/ first"
+        "BuboJob CRD not found — apply manifests/crds/ first"
     );
 }
 
@@ -252,10 +252,10 @@ async fn test_buboqueue_crd_registered() {
     );
 }
 
-/// Create an `MPIJob` and verify it appears in the API.
+/// Create an `BuboJob` and verify it appears in the API.
 #[tokio::test]
 #[ignore]
-async fn test_create_mpijob() {
+async fn test_create_bubojob() {
     if skip_if_no_cluster().await {
         return;
     }
@@ -265,15 +265,15 @@ async fn test_create_mpijob() {
         return;
     }
 
-    let name = "test-create-mpijob";
+    let name = "test-create-bubojob";
     let namespace = "default";
 
     // Clean up any leftover from a previous run.
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    let created = create_test_mpijob(client.clone(), name, namespace, 2)
+    let created = create_test_bubojob(client.clone(), name, namespace, 2)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     assert_eq!(created.metadata.name.as_deref(), Some(name));
     assert_eq!(created.spec.nodes, 2);
@@ -282,10 +282,10 @@ async fn test_create_mpijob() {
     cleanup_job(client, name, namespace).await.expect("cleanup");
 }
 
-/// Create an `MPIJob` with only the required field (`nodes`) and verify defaults.
+/// Create an `BuboJob` with only the required field (`nodes`) and verify defaults.
 #[tokio::test]
 #[ignore]
-async fn test_mpijob_default_values() {
+async fn test_bubojob_default_values() {
     if skip_if_no_cluster().await {
         return;
     }
@@ -295,24 +295,24 @@ async fn test_mpijob_default_values() {
         return;
     }
 
-    let name = "test-mpijob-defaults";
+    let name = "test-bubojob-defaults";
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
     // Post raw JSON with only the mandatory field.
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
-    let raw: MPIJob = serde_json::from_value(json!({
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
+    let raw: BuboJob = serde_json::from_value(json!({
         "apiVersion": "hpc.cscs.ch/v1alpha1",
-        "kind": "MPIJob",
+        "kind": "BuboJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 1 }
     }))
-    .expect("deserialize minimal MPIJob");
+    .expect("deserialize minimal BuboJob");
 
     let created = api
         .create(&PostParams::default(), &raw)
         .await
-        .expect("create minimal MPIJob");
+        .expect("create minimal BuboJob");
 
     assert_eq!(created.spec.nodes, 1);
     assert_eq!(created.spec.queue, "default", "default queue should be set");
@@ -372,9 +372,9 @@ async fn test_job_transitions_to_scheduling() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 2)
+    create_test_bubojob(client.clone(), name, namespace, 2)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     // Give the controller up to 30 s to move the job into Scheduling state.
     let reached = wait_for_job_state(
@@ -387,7 +387,7 @@ async fn test_job_transitions_to_scheduling() {
     .await;
 
     // Even if the controller is not running the job should at least be Pending.
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     let job = api.get(name).await.expect("get job");
     let state = job
         .status
@@ -406,7 +406,7 @@ async fn test_job_transitions_to_scheduling() {
     cleanup_job(client, name, namespace).await.expect("cleanup");
 }
 
-/// Submit an `MPIJob` with `nodes: 0`, which the controller should reject or mark Failed.
+/// Submit an `BuboJob` with `nodes: 0`, which the controller should reject or mark Failed.
 #[tokio::test]
 #[ignore]
 async fn test_invalid_job_fails() {
@@ -425,10 +425,10 @@ async fn test_invalid_job_fails() {
 
     // Try to create a job with 0 nodes.
     // The API server may reject it (via webhook validation) or the controller marks it Failed.
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
-    let raw: MPIJob = serde_json::from_value(json!({
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
+    let raw: BuboJob = serde_json::from_value(json!({
         "apiVersion": "hpc.cscs.ch/v1alpha1",
-        "kind": "MPIJob",
+        "kind": "BuboJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 0 }
     }))
@@ -475,12 +475,12 @@ async fn test_cancel_job() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 1)
+    create_test_bubojob(client.clone(), name, namespace, 1)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     // Verify it exists.
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     api.get(name).await.expect("job should exist");
 
     // Delete and wait.
@@ -523,13 +523,13 @@ async fn test_multiple_jobs_queued() {
 
     // Submit all three jobs.
     for name in &names {
-        create_test_mpijob(client.clone(), name, namespace, 1)
+        create_test_bubojob(client.clone(), name, namespace, 1)
             .await
             .unwrap_or_else(|e| panic!("create {name}: {e}"));
     }
 
     // Verify all three are visible.
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     for name in &names {
         let job = api.get(name).await.expect("job should exist");
         assert_eq!(job.metadata.name.as_deref(), Some(*name));
@@ -560,15 +560,15 @@ async fn test_multiple_jobs_queued() {
 use k8s_openapi::api::core::v1::{ConfigMap, Node, Pod, Service};
 use bubo_core::crd::TopologySpec;
 
-/// Build a minimal `MPIJob` with a custom walltime string.
-fn build_mpijob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime: &str) -> MPIJob {
-    MPIJob {
+/// Build a minimal `BuboJob` with a custom walltime string.
+fn build_bubojob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime: &str) -> BuboJob {
+    BuboJob {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: MPIJobSpec {
+        spec: BuboJobSpec {
             nodes,
             queue: "default".to_string(),
             priority: 50,
@@ -593,21 +593,21 @@ fn build_mpijob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime:
     }
 }
 
-/// Build a minimal `MPIJob` with topology constraints.
-fn build_mpijob_with_topology(
+/// Build a minimal `BuboJob` with topology constraints.
+fn build_bubojob_with_topology(
     name: &str,
     namespace: &str,
     nodes: u32,
     prefer_same_switch: bool,
     max_hops: Option<u32>,
-) -> MPIJob {
-    MPIJob {
+) -> BuboJob {
+    BuboJob {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: MPIJobSpec {
+        spec: BuboJobSpec {
             nodes,
             queue: "default".to_string(),
             priority: 50,
@@ -771,13 +771,13 @@ async fn test_job_runs_to_completion() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    let job = MPIJob {
+    let job = BuboJob {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: MPIJobSpec {
+        spec: BuboJobSpec {
             nodes: 1,
             queue: "default".to_string(),
             priority: 50,
@@ -801,10 +801,10 @@ async fn test_job_runs_to_completion() {
         status: None,
     };
 
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     api.create(&PostParams::default(), &job)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     // Wait for Running state first (up to 30 s).
     let reached_running = wait_for_job_state(
@@ -865,9 +865,9 @@ async fn test_job_creates_worker_pods() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 2)
+    create_test_bubojob(client.clone(), name, namespace, 2)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     // Wait up to 30 s for the controller to move past Pending.
     let _ = wait_for_job_state(
@@ -932,9 +932,9 @@ async fn test_job_creates_launcher_pod() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 1)
+    create_test_bubojob(client.clone(), name, namespace, 1)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let _ = wait_for_job_state(
         client.clone(),
@@ -1003,9 +1003,9 @@ async fn test_job_creates_headless_service() {
     let svc_name = format!("{name}-headless");
     let _ = svc_api.delete(&svc_name, &DeleteParams::default()).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 1)
+    create_test_bubojob(client.clone(), name, namespace, 1)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let _ = wait_for_job_state(
         client.clone(),
@@ -1061,9 +1061,9 @@ async fn test_job_creates_hostfile_configmap() {
     let cm_name = format!("{name}-hostfile");
     let _ = cm_api.delete(&cm_name, &DeleteParams::default()).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 1)
+    create_test_bubojob(client.clone(), name, namespace, 1)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let _ = wait_for_job_state(
         client.clone(),
@@ -1115,9 +1115,9 @@ async fn test_job_status_reports_assigned_nodes() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 2)
+    create_test_bubojob(client.clone(), name, namespace, 2)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let reached = wait_for_job_state(
         client.clone(),
@@ -1128,7 +1128,7 @@ async fn test_job_status_reports_assigned_nodes() {
     )
     .await;
 
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     let job = api.get(name).await.expect("get job");
 
     if reached {
@@ -1172,9 +1172,9 @@ async fn test_job_status_reports_workers() {
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
     let nodes = 2u32;
-    create_test_mpijob(client.clone(), name, namespace, nodes)
+    create_test_bubojob(client.clone(), name, namespace, nodes)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let reached = wait_for_job_state(
         client.clone(),
@@ -1185,7 +1185,7 @@ async fn test_job_status_reports_workers() {
     )
     .await;
 
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     let job = api.get(name).await.expect("get job");
 
     if reached {
@@ -1232,8 +1232,8 @@ async fn test_short_walltime_triggers_exceeded() {
 
     // 5-second walltime with a long-running command so the job stays alive
     // until the walltime is enforced.
-    let job = build_mpijob_with_walltime(name, namespace, 1, "5s");
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let job = build_bubojob_with_walltime(name, namespace, 1, "5s");
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     // Override the command to sleep so the job does not finish on its own.
     let mut job = job;
     if let Some(c) = job.spec.container.as_mut() {
@@ -1241,7 +1241,7 @@ async fn test_short_walltime_triggers_exceeded() {
     }
     api.create(&PostParams::default(), &job)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let reached = wait_for_job_state(
         client.clone(),
@@ -1300,12 +1300,12 @@ async fn test_multiple_jobs_independent_lifecycle() {
     }
 
     for name in &names {
-        create_test_mpijob(client.clone(), name, namespace, 1)
+        create_test_bubojob(client.clone(), name, namespace, 1)
             .await
             .unwrap_or_else(|e| panic!("create {name}: {e}"));
     }
 
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
 
     // Each job should appear in the API with its own metadata.
     for name in &names {
@@ -1358,17 +1358,17 @@ async fn test_high_priority_job() {
     let _ = cleanup_job(client.clone(), low_name, namespace).await;
     let _ = cleanup_job(client.clone(), high_name, namespace).await;
 
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
 
     // Create low-priority job (priority=100).
-    let mut low_job = build_mpijob(low_name, namespace, 1);
+    let mut low_job = build_bubojob(low_name, namespace, 1);
     low_job.spec.priority = 100;
     api.create(&PostParams::default(), &low_job)
         .await
         .expect("create low-priority job");
 
     // Create high-priority job (priority=200).
-    let mut high_job = build_mpijob(high_name, namespace, 1);
+    let mut high_job = build_bubojob(high_name, namespace, 1);
     high_job.spec.priority = 200;
     api.create(&PostParams::default(), &high_job)
         .await
@@ -1581,12 +1581,12 @@ async fn test_job_with_topology_constraints() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    let job = build_mpijob_with_topology(name, namespace, 1, true, Some(2));
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let job = build_bubojob_with_topology(name, namespace, 1, true, Some(2));
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     let created = api
         .create(&PostParams::default(), &job)
         .await
-        .expect("create MPIJob with topology");
+        .expect("create BuboJob with topology");
 
     assert_eq!(created.metadata.name.as_deref(), Some(name));
     let topo = created.spec.topology.as_ref().expect("topology spec");
@@ -1642,9 +1642,9 @@ async fn test_job_cleanup_removes_pods() {
     let namespace = "default";
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 1)
+    create_test_bubojob(client.clone(), name, namespace, 1)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     // Wait for the controller to create pods.
     let _ = wait_for_job_state(
@@ -1660,7 +1660,7 @@ async fn test_job_cleanup_removes_pods() {
     let pods_before = count_pods(client.clone(), namespace, &label_selector).await;
     eprintln!("pods before deletion: {pods_before}");
 
-    // Delete the MPIJob.
+    // Delete the BuboJob.
     cleanup_job(client.clone(), name, namespace)
         .await
         .expect("cleanup job");
@@ -1711,9 +1711,9 @@ async fn test_job_cleanup_removes_service() {
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
     let _ = svc_api.delete(&svc_name, &DeleteParams::default()).await;
 
-    create_test_mpijob(client.clone(), name, namespace, 1)
+    create_test_bubojob(client.clone(), name, namespace, 1)
         .await
-        .expect("create MPIJob");
+        .expect("create BuboJob");
 
     let _ = wait_for_job_state(
         client.clone(),
@@ -1734,7 +1734,7 @@ async fn test_job_cleanup_removes_service() {
 
     eprintln!("headless service existed before deletion: {svc_existed}");
 
-    // Delete the MPIJob.
+    // Delete the BuboJob.
     cleanup_job(client.clone(), name, namespace)
         .await
         .expect("cleanup job");
@@ -1783,13 +1783,13 @@ async fn test_container_backend_required_for_container_job() {
     let _ = cleanup_job(client.clone(), name, namespace).await;
 
     // Build a container-backend job but omit the container spec entirely.
-    let job = MPIJob {
+    let job = BuboJob {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: MPIJobSpec {
+        spec: BuboJobSpec {
             nodes: 1,
             queue: "default".to_string(),
             priority: 50,
@@ -1805,7 +1805,7 @@ async fn test_container_backend_required_for_container_job() {
         status: None,
     };
 
-    let api: Api<MPIJob> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BuboJob> = Api::namespaced(client.clone(), namespace);
     match api.create(&PostParams::default(), &job).await {
         Err(e) => {
             // Webhook or validation rejected the object — correct behaviour.
