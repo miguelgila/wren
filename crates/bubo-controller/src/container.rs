@@ -15,10 +15,10 @@ use crate::mpi;
 
 /// Returns true if the job needs the full MPI launcher pattern
 /// (headless service + hostfile + worker pods + launcher pod with mpirun).
-/// Simple single-node, single-task jobs without an MPI spec can run
-/// the user's command directly on a worker pod.
+/// Jobs without an explicit MPI spec run the user's command directly on
+/// worker pods — one per node — without a launcher.
 fn needs_mpi_launcher(spec: &bubo_core::BuboJobSpec) -> bool {
-    spec.nodes > 1 || spec.tasks_per_node > 1 || spec.mpi.is_some()
+    spec.mpi.is_some()
 }
 
 /// Container-based execution backend.
@@ -65,11 +65,13 @@ impl ContainerBackend {
             ..Default::default()
         };
 
-        svc_api
-            .create(&PostParams::default(), &svc)
-            .await
-            .map_err(BuboError::KubeError)?;
-        debug!(service = %svc_name, "created headless service");
+        match svc_api.create(&PostParams::default(), &svc).await {
+            Ok(_) => debug!(service = %svc_name, "created headless service"),
+            Err(kube::Error::Api(ref err)) if err.code == 409 => {
+                warn!(service = %svc_name, "headless service already exists, continuing");
+            }
+            Err(e) => return Err(BuboError::KubeError(e)),
+        }
         Ok(())
     }
 
@@ -99,11 +101,13 @@ impl ContainerBackend {
             ..Default::default()
         };
 
-        cm_api
-            .create(&PostParams::default(), &cm)
-            .await
-            .map_err(BuboError::KubeError)?;
-        debug!(configmap = %cm_name, "created hostfile configmap");
+        match cm_api.create(&PostParams::default(), &cm).await {
+            Ok(_) => debug!(configmap = %cm_name, "created hostfile configmap"),
+            Err(kube::Error::Api(ref err)) if err.code == 409 => {
+                warn!(configmap = %cm_name, "hostfile configmap already exists, continuing");
+            }
+            Err(e) => return Err(BuboError::KubeError(e)),
+        }
         Ok(())
     }
 
@@ -195,11 +199,14 @@ impl ContainerBackend {
             ..Default::default()
         };
 
-        pod_api
-            .create(&PostParams::default(), &pod)
-            .await
-            .map_err(BuboError::KubeError)?;
-        debug!(pod = %pod_name, node = %node_name, rank, "created worker pod");
+        match pod_api.create(&PostParams::default(), &pod).await {
+            Ok(_) => debug!(pod = %pod_name, node = %node_name, rank, "created worker pod"),
+            Err(kube::Error::Api(ref err)) if err.code == 409 => {
+                // Pod already exists — tolerate this to handle re-creation races
+                warn!(pod = %pod_name, "worker pod already exists, continuing");
+            }
+            Err(e) => return Err(BuboError::KubeError(e)),
+        }
         Ok(pod_name)
     }
 
@@ -278,11 +285,13 @@ impl ContainerBackend {
             ..Default::default()
         };
 
-        pod_api
-            .create(&PostParams::default(), &pod)
-            .await
-            .map_err(BuboError::KubeError)?;
-        debug!(pod = %pod_name, "created launcher pod");
+        match pod_api.create(&PostParams::default(), &pod).await {
+            Ok(_) => debug!(pod = %pod_name, "created launcher pod"),
+            Err(kube::Error::Api(ref err)) if err.code == 409 => {
+                warn!(pod = %pod_name, "launcher pod already exists, continuing");
+            }
+            Err(e) => return Err(BuboError::KubeError(e)),
+        }
         Ok(pod_name)
     }
 }
@@ -332,21 +341,24 @@ impl ExecutionBackend for ContainerBackend {
                 ),
             })
         } else {
-            info!(job = job_name, node = ?placement.nodes.first(), "launching simple job (no MPI launcher)");
+            info!(job = job_name, nodes = ?placement.nodes, "launching job without MPI launcher");
 
-            // Simple single-node job: just create a worker pod that runs the user's command
+            // No MPI: create a worker pod per node that runs the user's command directly
             let mut resource_ids = Vec::new();
-            let node = placement.nodes.first().ok_or_else(|| BuboError::ValidationError {
-                reason: "placement has no nodes".to_string(),
-            })?;
-            let pod_name = self
-                .create_worker_pod(job_name, namespace, spec, node, 0)
-                .await?;
-            resource_ids.push(pod_name);
+            for (rank, node) in placement.nodes.iter().enumerate() {
+                let pod_name = self
+                    .create_worker_pod(job_name, namespace, spec, node, rank as u32)
+                    .await?;
+                resource_ids.push(pod_name);
+            }
 
             Ok(LaunchResult {
                 resource_ids,
-                message: "launched 1 worker pod (simple mode)".to_string(),
+                message: format!(
+                    "launched {} worker pods (no MPI launcher) on {} nodes",
+                    placement.nodes.len(),
+                    placement.nodes.len()
+                ),
             })
         }
     }
