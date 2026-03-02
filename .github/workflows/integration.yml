@@ -18,6 +18,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   build:
@@ -26,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -56,6 +57,8 @@ jobs:
         with:
           name: release-binaries
           path: target/release/
+      - name: Make binaries executable
+        run: chmod +x target/release/wren-controller target/release/wren
       - name: Install kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
@@ -66,12 +69,17 @@ jobs:
           curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/kubectl
+      - name: Build Docker image (using pre-built binary)
+        run: |
+          cp target/release/wren-controller docker/
+          docker build -f docker/Dockerfile.controller --target runtime-prebuilt -t wren-controller:latest docker/
+          rm docker/wren-controller
       - name: Run integration tests
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 15
           max_attempts: 2
-          command: ./scripts/run-integration-tests.sh
+          command: SKIP_BUILD=1 ./scripts/run-integration-tests.sh
       - name: Upload integration logs
         if: always()
         uses: actions/upload-artifact@v4

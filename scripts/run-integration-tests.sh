@@ -335,6 +335,12 @@ build_binary() {
         log "Skipping cargo build (--skip-cargo)"
         return
     fi
+    local bin="${REPO_ROOT}/target/release/wren-controller"
+    if [[ -x "$bin" ]] && [[ "$bin" -nt "${REPO_ROOT}/crates/wren-controller/src/main.rs" ]]; then
+        log "Binary is up-to-date, skipping cargo build"
+        success "Binary exists: ${bin}"
+        return
+    fi
     log "Running: cargo build --release -p wren-controller"
     cargo build --release -p wren-controller \
         --manifest-path "${REPO_ROOT}/Cargo.toml"
@@ -351,8 +357,21 @@ build_binary() {
 build_and_load_image() {
     section "Building Docker image ${IMAGE_REF}"
 
+    local bin="${REPO_ROOT}/target/release/wren-controller"
     if $SKIP_CARGO || [[ "$SKIP_BUILD" == "1" ]]; then
-        log "Skipping Docker build (--skip-cargo)"
+        if [[ -x "$bin" ]]; then
+            log "Using pre-built binary for Docker image"
+            cp "$bin" "${REPO_ROOT}/docker/wren-controller"
+            docker build \
+                -f "${DOCKERFILE}" \
+                --target runtime-prebuilt \
+                -t "${IMAGE_REF}" \
+                "${REPO_ROOT}/docker"
+            rm -f "${REPO_ROOT}/docker/wren-controller"
+            success "Image built (prebuilt binary): ${IMAGE_REF}"
+        else
+            log "Skipping Docker build (--skip-cargo, no binary found)"
+        fi
     else
         log "Building: docker build -f ${DOCKERFILE} -t ${IMAGE_REF} ${REPO_ROOT}"
         docker build \
