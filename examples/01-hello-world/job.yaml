@@ -1,6 +1,6 @@
 # Simplest possible Wren job: single-node echo.
 # This is the "hello world" — verifies the controller is working.
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: hello-wren

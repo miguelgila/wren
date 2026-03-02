@@ -1,4 +1,4 @@
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: reaper-simulation

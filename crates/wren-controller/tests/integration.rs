@@ -205,8 +205,8 @@ async fn cleanup_queue(client: Client, name: &str, namespace: &str) -> anyhow::R
 /// Verify that both `WrenJob` and `WrenQueue` CRDs are registered with the API server.
 async fn ensure_crds_installed(client: Client) -> bool {
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let wrenjob_exists = crd_api.get("wrenjobs.hpc.cscs.ch").await.is_ok();
-    let queue_exists = crd_api.get("wrenqueues.hpc.cscs.ch").await.is_ok();
+    let wrenjob_exists = crd_api.get("wrenjobs.wren.scops-hpc.com").await.is_ok();
+    let queue_exists = crd_api.get("wrenqueues.wren.scops-hpc.com").await.is_ok();
     wrenjob_exists && queue_exists
 }
 
@@ -223,7 +223,7 @@ async fn test_wrenjob_crd_registered() {
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("wrenjobs.hpc.cscs.ch").await;
+    let result = crd_api.get("wrenjobs.wren.scops-hpc.com").await;
     assert!(
         result.is_ok(),
         "WrenJob CRD not found — apply manifests/crds/ first"
@@ -239,7 +239,7 @@ async fn test_wrenqueue_crd_registered() {
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("wrenqueues.hpc.cscs.ch").await;
+    let result = crd_api.get("wrenqueues.wren.scops-hpc.com").await;
     assert!(
         result.is_ok(),
         "WrenQueue CRD not found — apply manifests/crds/ first"
@@ -296,7 +296,7 @@ async fn test_wrenjob_default_values() {
     // Post raw JSON with only the mandatory field.
     let api: Api<WrenJob> = Api::namespaced(client.clone(), namespace);
     let raw: WrenJob = serde_json::from_value(json!({
-        "apiVersion": "hpc.cscs.ch/v1alpha1",
+        "apiVersion": "wren.scops-hpc.com/v1alpha1",
         "kind": "WrenJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 1 }
@@ -426,7 +426,7 @@ async fn test_invalid_job_fails() {
     // The API server may reject it (via webhook validation) or the controller marks it Failed.
     let api: Api<WrenJob> = Api::namespaced(client.clone(), namespace);
     let raw: WrenJob = serde_json::from_value(json!({
-        "apiVersion": "hpc.cscs.ch/v1alpha1",
+        "apiVersion": "wren.scops-hpc.com/v1alpha1",
         "kind": "WrenJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 0 }

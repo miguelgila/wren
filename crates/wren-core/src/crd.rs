@@ -8,7 +8,7 @@ use crate::types::*;
 /// This is the Wren equivalent of `sbatch`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "hpc.cscs.ch",
+    group = "wren.scops-hpc.com",
     version = "v1alpha1",
     kind = "WrenJob",
     namespaced,
@@ -175,7 +175,7 @@ pub struct WrenJobStatus {
 /// WrenQueue defines a scheduling queue with policies.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "hpc.cscs.ch",
+    group = "wren.scops-hpc.com",
     version = "v1alpha1",
     kind = "WrenQueue",
     namespaced,

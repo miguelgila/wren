@@ -420,10 +420,10 @@ install_crds() {
     # Wait for CRDs to become established before proceeding
     log "Waiting for CRDs to be established ..."
     kubectl wait --for=condition=Established \
-        crd/wrenjobs.hpc.cscs.ch \
+        crd/wrenjobs.wren.scops-hpc.com \
         --timeout=30s
     kubectl wait --for=condition=Established \
-        crd/wrenqueues.hpc.cscs.ch \
+        crd/wrenqueues.wren.scops-hpc.com \
         --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
 
     success "CRDs installed (${crd_count} files)"
@@ -602,7 +602,7 @@ _smoke_test_multinode_job() {
     local job_name="smoke-multinode"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -717,7 +717,7 @@ _smoke_test_queue_creation() {
     local queue_name="smoke-queue"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenQueue
 metadata:
   name: ${queue_name}
@@ -770,7 +770,7 @@ _smoke_test_invalid_job() {
     local job_name="smoke-invalid"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -835,7 +835,7 @@ _smoke_test_walltime_job() {
     local job_name="smoke-walltime"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -915,7 +915,7 @@ _smoke_test_concurrent_jobs() {
     log "Submitting 3 WrenJobs concurrently ..."
     for job_name in "${job_names[@]}"; do
         cat <<EOF | kubectl apply -f - &
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -974,7 +974,7 @@ _smoke_test_pod_labels() {
     local job_name="smoke-pod-labels"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1041,7 +1041,7 @@ _smoke_test_headless_service() {
     local job_name="smoke-headless-svc"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1107,7 +1107,7 @@ _smoke_test_deletion_cleanup() {
     local job_name="smoke-cleanup"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1180,7 +1180,7 @@ _smoke_test_pod_preservation() {
     local job_name="smoke-pod-preserve"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1242,7 +1242,7 @@ _smoke_test_job_logs() {
     local expected_output="wren-logs-test-output"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1304,7 +1304,7 @@ EOF
     local multi_job="smoke-logs-multi"
     local multi_manifest
     multi_manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${multi_job}
