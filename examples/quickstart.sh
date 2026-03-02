@@ -99,8 +99,8 @@ kubectl apply -f "$ROOT_DIR/manifests/crds/"
 ok "CRDs installed"
 
 # Verify
-kubectl get crd wrenjobs.hpc.cscs.ch &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
-kubectl get crd wrenqueues.hpc.cscs.ch &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
+kubectl get crd wrenjobs.wren.scops-hpc.com &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
+kubectl get crd wrenqueues.wren.scops-hpc.com &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
 
 # ---------------------------------------------------------------------------
 # Step 3: Build and load controller image

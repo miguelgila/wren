@@ -82,8 +82,10 @@ impl ClusterState {
         let node = self.nodes.iter().find(|n| n.name == node_name)?;
         let alloc = self.allocations.get(node_name).cloned().unwrap_or_default();
         Some((
-            node.allocatable_cpu_millis.saturating_sub(alloc.used_cpu_millis),
-            node.allocatable_memory_bytes.saturating_sub(alloc.used_memory_bytes),
+            node.allocatable_cpu_millis
+                .saturating_sub(alloc.used_cpu_millis),
+            node.allocatable_memory_bytes
+                .saturating_sub(alloc.used_memory_bytes),
             node.allocatable_gpus.saturating_sub(alloc.used_gpus),
         ))
     }
@@ -212,7 +214,13 @@ impl std::fmt::Display for WalltimeDuration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = self.seconds;
         if s >= 86400 {
-            write!(f, "{}d{}h{}m", s / 86400, (s % 86400) / 3600, (s % 3600) / 60)
+            write!(
+                f,
+                "{}d{}h{}m",
+                s / 86400,
+                (s % 86400) / 3600,
+                (s % 3600) / 60
+            )
         } else if s >= 3600 {
             write!(f, "{}h{}m", s / 3600, (s % 3600) / 60)
         } else if s >= 60 {

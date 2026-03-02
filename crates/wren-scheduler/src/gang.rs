@@ -1,5 +1,5 @@
-use wren_core::{WrenError, ClusterState, NodeResources, Placement, TopologySpec};
 use tracing::debug;
+use wren_core::{ClusterState, NodeResources, Placement, TopologySpec, WrenError};
 
 use crate::topology::TopologyScorer;
 
@@ -39,8 +39,9 @@ impl GangScheduler {
                     .cloned()
                     .unwrap_or_default();
 
-                let avail_cpu =
-                    node.allocatable_cpu_millis.saturating_sub(alloc.used_cpu_millis);
+                let avail_cpu = node
+                    .allocatable_cpu_millis
+                    .saturating_sub(alloc.used_cpu_millis);
                 let avail_mem = node
                     .allocatable_memory_bytes
                     .saturating_sub(alloc.used_memory_bytes);
@@ -74,9 +75,15 @@ impl GangScheduler {
 
         let Some(topo_spec) = topology else {
             // No topology: greedy first-N selection.
-            let selected: Vec<String> =
-                feasible.iter().take(n).map(|node| node.name.clone()).collect();
-            return Ok(Placement { nodes: selected, score: 1.0 });
+            let selected: Vec<String> = feasible
+                .iter()
+                .take(n)
+                .map(|node| node.name.clone())
+                .collect();
+            return Ok(Placement {
+                nodes: selected,
+                score: 1.0,
+            });
         };
 
         // Topology-aware path: generate candidates and score them.
@@ -101,7 +108,10 @@ impl GangScheduler {
 
         match best {
             Some((nodes, score)) => {
-                debug!(job = job_name, score, "Gang scheduler: topology-aware placement found");
+                debug!(
+                    job = job_name,
+                    score, "Gang scheduler: topology-aware placement found"
+                );
                 Ok(Placement { nodes, score })
             }
             None => Err(WrenError::NoFeasiblePlacement {
@@ -123,11 +133,7 @@ impl GangScheduler {
         max_candidates: usize,
     ) -> Vec<Vec<String>> {
         if feasible.len() < n || n == 0 {
-            return if n == 0 {
-                vec![vec![]]
-            } else {
-                vec![]
-            };
+            return if n == 0 { vec![vec![]] } else { vec![] };
         }
 
         let mut candidates: Vec<Vec<String>> = Vec::new();
@@ -138,8 +144,10 @@ impl GangScheduler {
             if candidates.len() >= max_candidates {
                 break;
             }
-            let window: Vec<String> =
-                feasible[start..start + n].iter().map(|node| node.name.clone()).collect();
+            let window: Vec<String> = feasible[start..start + n]
+                .iter()
+                .map(|node| node.name.clone())
+                .collect();
             candidates.push(window);
         }
 
@@ -183,11 +191,7 @@ mod tests {
         }
     }
 
-    fn make_node_topo(
-        name: &str,
-        switch: Option<&str>,
-        rack: Option<&str>,
-    ) -> NodeResources {
+    fn make_node_topo(name: &str, switch: Option<&str>, rack: Option<&str>) -> NodeResources {
         NodeResources {
             name: name.to_string(),
             allocatable_cpu_millis: 8000,
@@ -216,8 +220,7 @@ mod tests {
         ]);
 
         let placement =
-            GangScheduler::schedule(&cluster, "test-job", 3, 4000, 8_000_000_000, 1, None)
-                .unwrap();
+            GangScheduler::schedule(&cluster, "test-job", 3, 4000, 8_000_000_000, 1, None).unwrap();
         assert_eq!(placement.nodes.len(), 3);
         assert_eq!(placement.score, 1.0);
     }
@@ -230,8 +233,7 @@ mod tests {
         ]);
 
         let placement =
-            GangScheduler::schedule(&cluster, "test-job", 2, 4000, 8_000_000_000, 0, None)
-                .unwrap();
+            GangScheduler::schedule(&cluster, "test-job", 2, 4000, 8_000_000_000, 0, None).unwrap();
         assert_eq!(placement.nodes.len(), 2);
         assert!(placement.nodes.contains(&"node-0".to_string()));
         assert!(placement.nodes.contains(&"node-1".to_string()));
@@ -244,8 +246,7 @@ mod tests {
             make_node("node-1", 8000, 16_000_000_000, 2),
         ]);
 
-        let result =
-            GangScheduler::schedule(&cluster, "test-job", 4, 4000, 8_000_000_000, 0, None);
+        let result = GangScheduler::schedule(&cluster, "test-job", 4, 4000, 8_000_000_000, 0, None);
         assert!(result.is_err());
         match result.unwrap_err() {
             WrenError::NoFeasiblePlacement { job_name, reason } => {
@@ -264,8 +265,7 @@ mod tests {
             make_node("node-1", 2000, 16_000_000_000, 0),
         ]);
 
-        let result =
-            GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 0, None);
+        let result = GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 0, None);
         assert!(result.is_err());
     }
 
@@ -276,8 +276,7 @@ mod tests {
             make_node("node-1", 8000, 4_000_000_000, 0),
         ]);
 
-        let result =
-            GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 0, None);
+        let result = GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 0, None);
         assert!(result.is_err());
     }
 
@@ -288,8 +287,7 @@ mod tests {
             make_node("node-1", 8000, 16_000_000_000, 1),
         ]);
 
-        let result =
-            GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 2, None);
+        let result = GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 2, None);
         assert!(result.is_err());
     }
 
@@ -304,8 +302,7 @@ mod tests {
         cluster.allocate("node-0", 7000, 15_000_000_000, 0, "other-job");
 
         let placement =
-            GangScheduler::schedule(&cluster, "test-job", 2, 4000, 8_000_000_000, 0, None)
-                .unwrap();
+            GangScheduler::schedule(&cluster, "test-job", 2, 4000, 8_000_000_000, 0, None).unwrap();
         assert_eq!(placement.nodes.len(), 2);
         assert!(!placement.nodes.contains(&"node-0".to_string()));
         assert!(placement.nodes.contains(&"node-1".to_string()));
@@ -316,8 +313,7 @@ mod tests {
     fn test_empty_cluster() {
         let cluster = make_cluster(vec![]);
 
-        let result =
-            GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 0, None);
+        let result = GangScheduler::schedule(&cluster, "test-job", 1, 4000, 8_000_000_000, 0, None);
         assert!(result.is_err());
     }
 
@@ -326,8 +322,7 @@ mod tests {
         let cluster = make_cluster(vec![make_node("node-0", 8000, 16_000_000_000, 0)]);
 
         let placement =
-            GangScheduler::schedule(&cluster, "test-job", 0, 4000, 8_000_000_000, 0, None)
-                .unwrap();
+            GangScheduler::schedule(&cluster, "test-job", 0, 4000, 8_000_000_000, 0, None).unwrap();
         assert_eq!(placement.nodes.len(), 0);
     }
 
@@ -339,8 +334,7 @@ mod tests {
         ]);
 
         let placement =
-            GangScheduler::schedule(&cluster, "test-job", 2, 4000, 8_000_000_000, 0, None)
-                .unwrap();
+            GangScheduler::schedule(&cluster, "test-job", 2, 4000, 8_000_000_000, 0, None).unwrap();
         assert_eq!(placement.nodes.len(), 2);
     }
 
@@ -376,7 +370,11 @@ mod tests {
             placement.nodes
         );
         // Score should be near 1.0 for perfectly co-located nodes.
-        assert!(placement.score > 0.9, "expected high score, got {}", placement.score);
+        assert!(
+            placement.score > 0.9,
+            "expected high score, got {}",
+            placement.score
+        );
     }
 
     #[test]

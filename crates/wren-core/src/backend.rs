@@ -29,25 +29,13 @@ pub trait ExecutionBackend: Send + Sync {
     ) -> Result<LaunchResult, WrenError>;
 
     /// Check the health/status of a running job's workloads.
-    async fn status(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<BackendJobStatus, WrenError>;
+    async fn status(&self, job_name: &str, namespace: &str) -> Result<BackendJobStatus, WrenError>;
 
     /// Terminate a running job's workloads.
-    async fn terminate(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<(), WrenError>;
+    async fn terminate(&self, job_name: &str, namespace: &str) -> Result<(), WrenError>;
 
     /// Clean up any resources created for the job (services, configmaps, etc.).
-    async fn cleanup(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<(), WrenError>;
+    async fn cleanup(&self, job_name: &str, namespace: &str) -> Result<(), WrenError>;
 }
 
 /// Status of a job as reported by the execution backend.

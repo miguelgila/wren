@@ -1,5 +1,5 @@
-use wren_core::{WrenJobSpec, Placement};
 use std::collections::HashMap;
+use wren_core::{Placement, WrenJobSpec};
 
 /// Generates an MPI hostfile from a placement.
 ///
@@ -25,9 +25,7 @@ pub fn total_ranks(spec: &WrenJobSpec) -> u32 {
 /// Generates the mpirun command prefix based on the MPI spec.
 pub fn mpirun_args(spec: &WrenJobSpec, hostfile_path: &str) -> Vec<String> {
     let mpi = spec.mpi.as_ref();
-    let impl_name = mpi
-        .map(|m| m.implementation.as_str())
-        .unwrap_or("openmpi");
+    let impl_name = mpi.map(|m| m.implementation.as_str()).unwrap_or("openmpi");
 
     let np = total_ranks(spec);
 
@@ -61,9 +59,16 @@ pub fn mpirun_args(spec: &WrenJobSpec, hostfile_path: &str) -> Vec<String> {
 }
 
 /// Standard labels applied to all pods created for a WrenJob.
-pub fn job_labels(job_name: &str, role: &str, rank: Option<u32>) -> std::collections::BTreeMap<String, String> {
+pub fn job_labels(
+    job_name: &str,
+    role: &str,
+    rank: Option<u32>,
+) -> std::collections::BTreeMap<String, String> {
     let mut labels = std::collections::BTreeMap::new();
-    labels.insert("app.kubernetes.io/managed-by".to_string(), "wren".to_string());
+    labels.insert(
+        "app.kubernetes.io/managed-by".to_string(),
+        "wren".to_string(),
+    );
     labels.insert("wren.io/job-name".to_string(), job_name.to_string());
     labels.insert("wren.io/role".to_string(), role.to_string());
     if let Some(r) = rank {
@@ -120,9 +125,7 @@ pub fn generate_bare_metal_hostfile(nodes: &[String], tasks_per_node: u32) -> St
 /// - `intel-mpi`: generates `mpiexec.hydra` arguments
 pub fn bare_metal_mpirun_args(spec: &WrenJobSpec, hostfile_path: &str) -> Vec<String> {
     let mpi = spec.mpi.as_ref();
-    let impl_name = mpi
-        .map(|m| m.implementation.as_str())
-        .unwrap_or("openmpi");
+    let impl_name = mpi.map(|m| m.implementation.as_str()).unwrap_or("openmpi");
 
     match impl_name {
         "cray-mpich" => srun_args(spec, hostfile_path),
@@ -182,9 +185,7 @@ pub fn bare_metal_env_vars(
     hostfile_path: &str,
 ) -> HashMap<String, String> {
     let mpi = spec.mpi.as_ref();
-    let impl_name = mpi
-        .map(|m| m.implementation.as_str())
-        .unwrap_or("openmpi");
+    let impl_name = mpi.map(|m| m.implementation.as_str()).unwrap_or("openmpi");
 
     let total = total_ranks(spec);
 
@@ -284,10 +285,7 @@ mod tests {
     fn test_generate_hostfile() {
         let placement = make_placement(&["node-0", "node-1", "node-2"]);
         let hostfile = generate_hostfile(&placement, 4);
-        assert_eq!(
-            hostfile,
-            "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4"
-        );
+        assert_eq!(hostfile, "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4");
     }
 
     #[test]

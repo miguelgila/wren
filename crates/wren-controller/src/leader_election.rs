@@ -60,9 +60,9 @@ pub fn resolve_namespace() -> String {
             return ns;
         }
     }
-    if let Ok(ns) = std::fs::read_to_string(
-        "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
-    ) {
+    if let Ok(ns) =
+        std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+    {
         let ns = ns.trim().to_string();
         if !ns.is_empty() {
             return ns;
@@ -105,8 +105,7 @@ pub async fn run_leader_election(
     config: LeaderElectionConfig,
 ) -> anyhow::Result<watch::Receiver<bool>> {
     let (tx, rx) = watch::channel(false);
-    let lease_api: Api<Lease> =
-        Api::namespaced(client.clone(), &config.lease_namespace);
+    let lease_api: Api<Lease> = Api::namespaced(client.clone(), &config.lease_namespace);
 
     let lease_name = config.lease_name.clone();
     let lease_namespace = config.lease_namespace.clone();
@@ -134,12 +133,11 @@ pub async fn run_leader_election(
                     continue;
                 }
                 Ok(Some(existing)) => {
-                    let spec = existing.spec.as_ref().map(|s| s.clone()).unwrap_or_default();
+                    let spec = existing.spec.clone().unwrap_or_default();
 
                     if lease_is_held_by_other(&spec, &identity, now) {
                         // Someone else holds a valid lease; wait and retry.
-                        let current_holder =
-                            spec.holder_identity.as_deref().unwrap_or("<unknown>");
+                        let current_holder = spec.holder_identity.as_deref().unwrap_or("<unknown>");
                         if *tx.borrow() {
                             warn!(
                                 holder = %current_holder,
@@ -159,7 +157,9 @@ pub async fn run_leader_election(
                         spec.lease_transitions.unwrap_or(0) + 1
                     };
                     let acquire_time = if is_renewal {
-                        spec.acquire_time.clone().unwrap_or_else(|| to_micro_time(now))
+                        spec.acquire_time
+                            .clone()
+                            .unwrap_or_else(|| to_micro_time(now))
                     } else {
                         to_micro_time(now)
                     };
@@ -260,7 +260,7 @@ mod tests {
         // Temporarily set POD_NAME; we test the function directly.
         // Since env is process-global, we call resolve_identity with a known env state
         // by checking the logic path manually.
-        let id = "my-pod-abc123".to_string();
+        let _id = "my-pod-abc123".to_string();
         // Simulate: if POD_NAME were set to this, the function returns it.
         // We verify the fallback chain instead (no env set in test context).
         let result = resolve_identity();
@@ -302,10 +302,8 @@ mod tests {
         // In a non-cluster environment it must be "default".
         // (CI runners won't have the SA namespace file.)
         if std::env::var("POD_NAMESPACE").is_err()
-            && std::fs::read_to_string(
-                "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
-            )
-            .is_err()
+            && std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+                .is_err()
         {
             assert_eq!(ns, "default");
         }

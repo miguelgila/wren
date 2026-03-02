@@ -5,10 +5,11 @@ pub mod types;
 
 // Re-export commonly used items
 pub use crd::{
-    WrenJob, WrenJobSpec, WrenJobStatus, WrenQueue, WrenQueueSpec, ContainerSpec, DependencyType,
-    EnvVar, JobDependency, MPISpec, ReaperSpec, ResourceRequirements, TopologySpec, VolumeMount,
+    ContainerSpec, DependencyType, EnvVar, JobDependency, MPISpec, ReaperSpec,
+    ResourceRequirements, TopologySpec, VolumeMount, WrenJob, WrenJobSpec, WrenJobStatus,
+    WrenQueue, WrenQueueSpec,
 };
-pub use error::{WrenError, Result};
+pub use error::{Result, WrenError};
 pub use types::{
     ClusterState, ExecutionBackendType, JobState, NodeAllocation, NodeResources, Placement,
     QueuedJob, WalltimeDuration,

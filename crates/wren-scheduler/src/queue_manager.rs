@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use wren_core::{WrenError, QueuedJob, WalltimeDuration};
+use wren_core::{QueuedJob, WalltimeDuration, WrenError};
 
 use crate::queue::PriorityQueue;
 
@@ -112,9 +112,12 @@ impl QueueManager {
     /// 5. User has not hit max_jobs_per_user limit
     pub fn submit_job(&mut self, job: QueuedJob) -> Result<(), WrenError> {
         let queue_name = job.queue.clone();
-        let mq = self.queues.get(&queue_name).ok_or_else(|| WrenError::QueueNotFound {
-            queue_name: queue_name.clone(),
-        })?;
+        let mq = self
+            .queues
+            .get(&queue_name)
+            .ok_or_else(|| WrenError::QueueNotFound {
+                queue_name: queue_name.clone(),
+            })?;
 
         // Check job node count fits within queue maximum.
         if job.nodes > mq.config.max_nodes {
@@ -181,7 +184,11 @@ impl QueueManager {
         let best_queue = self
             .queues
             .iter()
-            .filter_map(|(name, mq)| mq.queue.peek().map(|job| (name.clone(), job.priority, job.submit_time)))
+            .filter_map(|(name, mq)| {
+                mq.queue
+                    .peek()
+                    .map(|job| (name.clone(), job.priority, job.submit_time))
+            })
             .max_by(|a, b| {
                 // Higher priority wins; tie-break on earlier submit time.
                 match a.1.cmp(&b.1) {
@@ -293,7 +300,9 @@ mod tests {
             cpu_per_node_millis: 1000,
             memory_per_node_bytes: 1_000_000_000,
             gpus_per_node: 0,
-            walltime: Some(WalltimeDuration { seconds: walltime_secs }),
+            walltime: Some(WalltimeDuration {
+                seconds: walltime_secs,
+            }),
             submit_time: Utc::now(),
         }
     }
@@ -387,12 +396,15 @@ mod tests {
     #[test]
     fn test_max_walltime_enforcement() {
         let mut mgr = QueueManager::new("default");
-        mgr.register_queue("short", QueueConfig {
-            max_nodes: 100,
-            max_walltime: Some(WalltimeDuration { seconds: 3600 }), // 1h
-            max_jobs_per_user: None,
-            default_priority: 50,
-        });
+        mgr.register_queue(
+            "short",
+            QueueConfig {
+                max_nodes: 100,
+                max_walltime: Some(WalltimeDuration { seconds: 3600 }), // 1h
+                max_jobs_per_user: None,
+                default_priority: 50,
+            },
+        );
 
         // Job with walltime exactly at the limit — should pass.
         let ok_job = make_job_with_walltime("ok-job", "short", 3600);
@@ -410,12 +422,15 @@ mod tests {
     #[test]
     fn test_max_jobs_per_user() {
         let mut mgr = QueueManager::new("default");
-        mgr.register_queue("fair", QueueConfig {
-            max_nodes: 1000,
-            max_walltime: None,
-            max_jobs_per_user: Some(2),
-            default_priority: 50,
-        });
+        mgr.register_queue(
+            "fair",
+            QueueConfig {
+                max_nodes: 1000,
+                max_walltime: None,
+                max_jobs_per_user: Some(2),
+                default_priority: 50,
+            },
+        );
 
         // Simulate two active jobs for user-a.
         mgr.record_job_started("fair", 1, "user-a");
@@ -440,9 +455,12 @@ mod tests {
         mgr.register_queue("gpu", default_config(128));
 
         // Submit lower-priority job to gpu queue and higher-priority to default.
-        mgr.submit_job(make_job("low", "gpu", "user-a", 10, 1)).unwrap();
-        mgr.submit_job(make_job("high", "default", "user-a", 100, 1)).unwrap();
-        mgr.submit_job(make_job("mid", "gpu", "user-a", 50, 1)).unwrap();
+        mgr.submit_job(make_job("low", "gpu", "user-a", 10, 1))
+            .unwrap();
+        mgr.submit_job(make_job("high", "default", "user-a", 100, 1))
+            .unwrap();
+        mgr.submit_job(make_job("mid", "gpu", "user-a", 50, 1))
+            .unwrap();
 
         // next_job should return the globally highest-priority job.
         let job = mgr.next_job().unwrap();
@@ -462,8 +480,10 @@ mod tests {
         let mut mgr = QueueManager::new("default");
         mgr.register_queue("gpu", default_config(128));
 
-        mgr.submit_job(make_job("gpu-job", "gpu", "user-a", 100, 1)).unwrap();
-        mgr.submit_job(make_job("default-job", "default", "user-a", 200, 1)).unwrap();
+        mgr.submit_job(make_job("gpu-job", "gpu", "user-a", 100, 1))
+            .unwrap();
+        mgr.submit_job(make_job("default-job", "default", "user-a", 200, 1))
+            .unwrap();
 
         // Drain gpu queue specifically — should not touch default.
         let job = mgr.next_job_from("gpu").unwrap();
@@ -478,8 +498,10 @@ mod tests {
         let mut mgr = QueueManager::new("default");
         mgr.register_queue("gpu", default_config(128));
 
-        mgr.submit_job(make_job("job-a", "default", "user-a", 50, 1)).unwrap();
-        mgr.submit_job(make_job("job-b", "gpu", "user-a", 50, 1)).unwrap();
+        mgr.submit_job(make_job("job-a", "default", "user-a", 50, 1))
+            .unwrap();
+        mgr.submit_job(make_job("job-b", "gpu", "user-a", 50, 1))
+            .unwrap();
 
         // Cancel from a different queue than where it lives.
         let removed = mgr.cancel_job("job-b");
@@ -522,8 +544,10 @@ mod tests {
         let mut mgr = QueueManager::new("default");
         mgr.register_queue("test", default_config(50));
 
-        mgr.submit_job(make_job("j1", "test", "user-a", 50, 3)).unwrap();
-        mgr.submit_job(make_job("j2", "test", "user-a", 50, 2)).unwrap();
+        mgr.submit_job(make_job("j1", "test", "user-a", 50, 3))
+            .unwrap();
+        mgr.submit_job(make_job("j2", "test", "user-a", 50, 2))
+            .unwrap();
         mgr.record_job_started("test", 10, "user-b");
 
         let stats = mgr.queue_stats("test").unwrap();

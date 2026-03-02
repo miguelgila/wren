@@ -1,6 +1,6 @@
-use wren_core::QueuedJob;
-use std::collections::BinaryHeap;
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use wren_core::QueuedJob;
 
 /// Wrapper that makes `QueuedJob` orderable for `BinaryHeap` (max-heap).
 /// Ordering: higher priority first; ties broken by earlier submit_time (FIFO).
@@ -156,8 +156,8 @@ mod tests {
     fn test_fifo_for_same_priority() {
         let mut q = PriorityQueue::new();
         // Earlier submit time should come first among same-priority jobs
-        q.push(make_job("first", 50, -20));  // submitted 20s ago
-        q.push(make_job("third", 50, 0));    // submitted now
+        q.push(make_job("first", 50, -20)); // submitted 20s ago
+        q.push(make_job("third", 50, 0)); // submitted now
         q.push(make_job("second", 50, -10)); // submitted 10s ago
 
         assert_eq!(q.pop().unwrap().name, "first");

@@ -38,9 +38,9 @@ pub struct RunningJobInfo {
 impl RunningJobInfo {
     /// Estimated end time. Returns `None` if the job has no walltime.
     pub fn estimated_end(&self) -> Option<DateTime<Utc>> {
-        self.walltime.as_ref().map(|wt| {
-            self.started_at + chrono::Duration::seconds(wt.seconds as i64)
-        })
+        self.walltime
+            .as_ref()
+            .map(|wt| self.started_at + chrono::Duration::seconds(wt.seconds as i64))
     }
 }
 
@@ -102,16 +102,16 @@ impl ResourceTimeline {
             .node_timelines
             .get(node_name)
             .map(|tl| {
-                tl.events
-                    .iter()
-                    .filter(|ev| ev.release_at <= at)
-                    .fold((0u64, 0u64, 0u32), |acc, ev| {
+                tl.events.iter().filter(|ev| ev.release_at <= at).fold(
+                    (0u64, 0u64, 0u32),
+                    |acc, ev| {
                         (
                             acc.0 + ev.cpu_millis,
                             acc.1 + ev.memory_bytes,
                             acc.2 + ev.gpus,
                         )
-                    })
+                    },
+                )
             })
             .unwrap_or((0, 0, 0));
 
@@ -124,6 +124,7 @@ impl ResourceTimeline {
     ///
     /// Returns `None` if no such time exists within the look-ahead window
     /// (`not_before + look_ahead`).
+    #[allow(clippy::too_many_arguments)]
     pub fn earliest_start(
         &self,
         cluster: &ClusterState,
@@ -208,9 +209,12 @@ impl BackfillScheduler {
             };
 
             for node_name in &job.nodes {
-                let tl = node_timelines.entry(node_name.clone()).or_insert_with(|| {
-                    NodeTimeline { node_name: node_name.clone(), events: Vec::new() }
-                });
+                let tl = node_timelines
+                    .entry(node_name.clone())
+                    .or_insert_with(|| NodeTimeline {
+                        node_name: node_name.clone(),
+                        events: Vec::new(),
+                    });
                 tl.events.push(ReleaseEvent {
                     release_at: end_time,
                     cpu_millis: job.cpu_per_node_millis,
@@ -225,10 +229,7 @@ impl BackfillScheduler {
             tl.events.sort_by_key(|ev| ev.release_at);
         }
 
-        debug!(
-            node_count = node_timelines.len(),
-            "Built resource timeline"
-        );
+        debug!(node_count = node_timelines.len(), "Built resource timeline");
 
         ResourceTimeline {
             node_timelines,
@@ -333,10 +334,17 @@ impl BackfillScheduler {
             .nodes
             .iter()
             .filter(|n| {
-                let alloc = cluster.allocations.get(&n.name).cloned().unwrap_or_default();
-                let avail_cpu = n.allocatable_cpu_millis.saturating_sub(alloc.used_cpu_millis);
-                let avail_mem =
-                    n.allocatable_memory_bytes.saturating_sub(alloc.used_memory_bytes);
+                let alloc = cluster
+                    .allocations
+                    .get(&n.name)
+                    .cloned()
+                    .unwrap_or_default();
+                let avail_cpu = n
+                    .allocatable_cpu_millis
+                    .saturating_sub(alloc.used_cpu_millis);
+                let avail_mem = n
+                    .allocatable_memory_bytes
+                    .saturating_sub(alloc.used_memory_bytes);
                 let avail_gpu = n.allocatable_gpus.saturating_sub(alloc.used_gpus);
                 avail_cpu >= job.cpu_per_node_millis
                     && avail_mem >= job.memory_per_node_bytes
@@ -403,7 +411,10 @@ mod tests {
     }
 
     fn cluster(nodes: Vec<NodeResources>) -> ClusterState {
-        ClusterState { nodes, allocations: HashMap::new() }
+        ClusterState {
+            nodes,
+            allocations: HashMap::new(),
+        }
     }
 
     fn queued_job(name: &str, priority: i32, nodes: u32, walltime_secs: Option<u64>) -> QueuedJob {
@@ -522,7 +533,11 @@ mod tests {
         let job = queued_job("j", 10, 1, None);
         let now = Utc::now();
         let reservation = Some(now + chrono::Duration::seconds(3600));
-        assert!(!BackfillScheduler::is_safe_to_backfill(&job, now, reservation));
+        assert!(!BackfillScheduler::is_safe_to_backfill(
+            &job,
+            now,
+            reservation
+        ));
     }
 
     #[test]
@@ -530,7 +545,11 @@ mod tests {
         let job = queued_job("j", 10, 1, Some(1800)); // 30 min walltime
         let now = Utc::now();
         let reservation = Some(now + chrono::Duration::seconds(3600)); // reserved in 1 h
-        assert!(BackfillScheduler::is_safe_to_backfill(&job, now, reservation));
+        assert!(BackfillScheduler::is_safe_to_backfill(
+            &job,
+            now,
+            reservation
+        ));
     }
 
     #[test]
@@ -538,7 +557,11 @@ mod tests {
         let job = queued_job("j", 10, 1, Some(7200)); // 2 h walltime
         let now = Utc::now();
         let reservation = Some(now + chrono::Duration::seconds(3600)); // reserved in 1 h
-        assert!(!BackfillScheduler::is_safe_to_backfill(&job, now, reservation));
+        assert!(!BackfillScheduler::is_safe_to_backfill(
+            &job,
+            now,
+            reservation
+        ));
     }
 
     #[test]
@@ -554,8 +577,13 @@ mod tests {
     #[test]
     fn test_no_pending_jobs_returns_empty() {
         let c = cluster(vec![node("n0", 8000, 16_000_000_000, 0)]);
-        let decisions =
-            BackfillScheduler::find_backfill_candidates(&c, &[], &[], Duration::from_secs(7200), Utc::now());
+        let decisions = BackfillScheduler::find_backfill_candidates(
+            &c,
+            &[],
+            &[],
+            Duration::from_secs(7200),
+            Utc::now(),
+        );
         assert!(decisions.is_empty());
     }
 

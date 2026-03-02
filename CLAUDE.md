@@ -72,7 +72,7 @@ wren/
 ├── README.md                  # User-facing documentation
 ├── Cargo.toml                 # Workspace root
 ├── Cargo.lock
-├── LICENSE                    # Apache-2.0
+├── LICENSE                    # GPL-3.0-or-later
 │
 ├── crates/
 │   ├── wren-core/           # Shared types, CRD definitions, traits
@@ -145,7 +145,7 @@ wren/
 ### MPIJob (primary user-facing CRD)
 
 ```yaml
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: MPIJob
 metadata:
   name: my-simulation
@@ -201,7 +201,7 @@ spec:
 ### WrenQueue
 
 ```yaml
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenQueue
 metadata:
   name: default
@@ -464,7 +464,7 @@ Located in `tests/integration/` at the workspace root.
 #### 1.1 CRD Installation
 - [ ] Generate CRD manifests from Rust types (`cargo run --bin crd-gen`)
 - [ ] Apply CRDs to a fresh kind cluster
-- [ ] Verify CRDs are registered: `kubectl get crd mpijobs.hpc.cscs.ch`
+- [ ] Verify CRDs are registered: `kubectl get crd mpijobs.wren.scops-hpc.com`
 - [ ] Verify CRDs have correct print columns and status subresource
 
 #### 1.2 Controller Startup

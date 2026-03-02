@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use wren_core::WrenJob;
 use kube::{api::Api, Client};
+use wren_core::WrenJob;
 
 /// Show detailed status information about a specific WrenJob.
 pub async fn run(job: &str, namespace: &str) -> Result<()> {

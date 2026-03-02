@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
-use wren_core::{WrenError, DependencyType, JobDependency, JobState};
 use tracing::debug;
+use wren_core::{DependencyType, JobDependency, JobState, WrenError};
 
 // ---------------------------------------------------------------------------
 // DependencyStatus
@@ -46,11 +46,17 @@ impl DependencyResolver {
     ///
     /// Overwrites any previously registered dependency list for the same job.
     pub fn register_job(&mut self, job_name: &str, deps: Vec<JobDependency>) {
-        debug!(job = job_name, dep_count = deps.len(), "DependencyResolver: registering job");
+        debug!(
+            job = job_name,
+            dep_count = deps.len(),
+            "DependencyResolver: registering job"
+        );
         self.dependencies.insert(job_name.to_string(), deps);
         // Ensure the job has an entry in job_states (default Pending) so it
         // appears in the full job graph for cycle detection.
-        self.job_states.entry(job_name.to_string()).or_insert(JobState::Pending);
+        self.job_states
+            .entry(job_name.to_string())
+            .or_insert(JobState::Pending);
     }
 
     /// Update the known state of a job.
@@ -179,7 +185,9 @@ impl DependencyResolver {
                 // Edge: dep.job -> job_name
                 in_degree.entry(dep.job.as_str()).or_insert(0);
                 *in_degree.entry(job_name.as_str()).or_insert(0) += 1;
-                adj.entry(dep.job.as_str()).or_default().push(job_name.as_str());
+                adj.entry(dep.job.as_str())
+                    .or_default()
+                    .push(job_name.as_str());
             }
         }
 
@@ -294,19 +302,15 @@ impl JobArraySpec {
         // Split off optional `%max_concurrent` suffix.
         let (range_part, max_concurrent) = if let Some(pos) = input.find('%') {
             let conc_str = &input[pos + 1..];
-            let conc: u32 =
-                conc_str.parse().map_err(|_| WrenError::ValidationError {
-                    reason: format!(
-                        "invalid max_concurrent value '{}' in job array spec '{}'",
-                        conc_str, input
-                    ),
-                })?;
+            let conc: u32 = conc_str.parse().map_err(|_| WrenError::ValidationError {
+                reason: format!(
+                    "invalid max_concurrent value '{}' in job array spec '{}'",
+                    conc_str, input
+                ),
+            })?;
             if conc == 0 {
                 return Err(WrenError::ValidationError {
-                    reason: format!(
-                        "max_concurrent must be >= 1 in job array spec '{}'",
-                        input
-                    ),
+                    reason: format!("max_concurrent must be >= 1 in job array spec '{}'", input),
                 });
             }
             (&input[..pos], Some(conc))
@@ -317,13 +321,12 @@ impl JobArraySpec {
         // Split off optional `:step` suffix from the range.
         let (bounds_part, step) = if let Some(pos) = range_part.find(':') {
             let step_str = &range_part[pos + 1..];
-            let step: u32 =
-                step_str.parse().map_err(|_| WrenError::ValidationError {
-                    reason: format!(
-                        "invalid step value '{}' in job array spec '{}'",
-                        step_str, input
-                    ),
-                })?;
+            let step: u32 = step_str.parse().map_err(|_| WrenError::ValidationError {
+                reason: format!(
+                    "invalid step value '{}' in job array spec '{}'",
+                    step_str, input
+                ),
+            })?;
             if step == 0 {
                 return Err(WrenError::ValidationError {
                     reason: format!("step must be >= 1 in job array spec '{}'", input),
@@ -335,12 +338,14 @@ impl JobArraySpec {
         };
 
         // Parse `start-end`.
-        let dash_pos = bounds_part.find('-').ok_or_else(|| WrenError::ValidationError {
-            reason: format!(
-                "missing '-' separator in job array spec '{}'; expected 'start-end'",
-                input
-            ),
-        })?;
+        let dash_pos = bounds_part
+            .find('-')
+            .ok_or_else(|| WrenError::ValidationError {
+                reason: format!(
+                    "missing '-' separator in job array spec '{}'; expected 'start-end'",
+                    input
+                ),
+            })?;
 
         let start_str = &bounds_part[..dash_pos];
         let end_str = &bounds_part[dash_pos + 1..];
@@ -368,7 +373,12 @@ impl JobArraySpec {
             });
         }
 
-        Ok(Self { start, end, step, max_concurrent })
+        Ok(Self {
+            start,
+            end,
+            step,
+            max_concurrent,
+        })
     }
 
     /// Expand the array spec into individual `ExpandedJob` entries.
@@ -413,7 +423,10 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn dep(dep_type: DependencyType, job: &str) -> JobDependency {
-        JobDependency { dep_type, job: job.to_string() }
+        JobDependency {
+            dep_type,
+            job: job.to_string(),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -424,14 +437,20 @@ mod tests {
     fn test_no_deps_is_satisfied() {
         let mut resolver = DependencyResolver::new();
         resolver.register_job("job-a", vec![]);
-        assert_eq!(resolver.check_dependencies("job-a"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("job-a"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
     fn test_unknown_job_is_satisfied() {
         let resolver = DependencyResolver::new();
         // A job that was never registered has no deps → Satisfied.
-        assert_eq!(resolver.check_dependencies("ghost"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("ghost"),
+            DependencyStatus::Satisfied
+        );
     }
 
     // ------------------------------------------------------------------
@@ -447,7 +466,9 @@ mod tests {
 
         assert_eq!(
             resolver.check_dependencies("my-job"),
-            DependencyStatus::Waiting { pending_deps: vec!["dep-job".to_string()] }
+            DependencyStatus::Waiting {
+                pending_deps: vec!["dep-job".to_string()]
+            }
         );
     }
 
@@ -458,7 +479,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::Succeeded);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterOk, "dep-job")]);
 
-        assert_eq!(resolver.check_dependencies("my-job"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -483,7 +507,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::Cancelled);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterOk, "dep-job")]);
 
-        assert!(matches!(resolver.check_dependencies("my-job"), DependencyStatus::Failed { .. }));
+        assert!(matches!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Failed { .. }
+        ));
     }
 
     #[test]
@@ -492,7 +519,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::WalltimeExceeded);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterOk, "dep-job")]);
 
-        assert!(matches!(resolver.check_dependencies("my-job"), DependencyStatus::Failed { .. }));
+        assert!(matches!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Failed { .. }
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -505,7 +535,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::Succeeded);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterAny, "dep-job")]);
 
-        assert_eq!(resolver.check_dependencies("my-job"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -514,7 +547,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::Failed);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterAny, "dep-job")]);
 
-        assert_eq!(resolver.check_dependencies("my-job"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -523,7 +559,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::Cancelled);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterAny, "dep-job")]);
 
-        assert_eq!(resolver.check_dependencies("my-job"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -548,7 +587,10 @@ mod tests {
         resolver.update_job_state("dep-job", JobState::Failed);
         resolver.register_job("my-job", vec![dep(DependencyType::AfterNotOk, "dep-job")]);
 
-        assert_eq!(resolver.check_dependencies("my-job"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -595,7 +637,10 @@ mod tests {
             ],
         );
 
-        assert_eq!(resolver.check_dependencies("c"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("c"),
+            DependencyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -677,7 +722,11 @@ mod tests {
         let result = resolver.validate_no_cycles();
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("cycle"), "expected 'cycle' in: {}", err_msg);
+        assert!(
+            err_msg.contains("cycle"),
+            "expected 'cycle' in: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -710,7 +759,10 @@ mod tests {
         resolver.register_job("b", vec![dep(DependencyType::AfterOk, "a")]);
 
         // b is ready because a succeeded.
-        assert_eq!(resolver.check_dependencies("b"), DependencyStatus::Satisfied);
+        assert_eq!(
+            resolver.check_dependencies("b"),
+            DependencyStatus::Satisfied
+        );
 
         resolver.remove_job("a");
 
@@ -809,9 +861,30 @@ mod tests {
         let spec = JobArraySpec::parse("0-2").unwrap();
         let jobs = spec.expand("my-job");
         assert_eq!(jobs.len(), 3);
-        assert_eq!(jobs[0], ExpandedJob { name: "my-job_0".to_string(), array_index: 0, parent_name: "my-job".to_string() });
-        assert_eq!(jobs[1], ExpandedJob { name: "my-job_1".to_string(), array_index: 1, parent_name: "my-job".to_string() });
-        assert_eq!(jobs[2], ExpandedJob { name: "my-job_2".to_string(), array_index: 2, parent_name: "my-job".to_string() });
+        assert_eq!(
+            jobs[0],
+            ExpandedJob {
+                name: "my-job_0".to_string(),
+                array_index: 0,
+                parent_name: "my-job".to_string()
+            }
+        );
+        assert_eq!(
+            jobs[1],
+            ExpandedJob {
+                name: "my-job_1".to_string(),
+                array_index: 1,
+                parent_name: "my-job".to_string()
+            }
+        );
+        assert_eq!(
+            jobs[2],
+            ExpandedJob {
+                name: "my-job_2".to_string(),
+                array_index: 2,
+                parent_name: "my-job".to_string()
+            }
+        );
     }
 
     #[test]
@@ -855,13 +928,16 @@ mod tests {
         resolver.register_job(
             "c",
             vec![
-                dep(DependencyType::AfterOk, "a"), // permanent failure
+                dep(DependencyType::AfterOk, "a"),  // permanent failure
                 dep(DependencyType::AfterAny, "b"), // would be waiting
             ],
         );
 
         // The first dep causes an immediate Failed return.
-        assert!(matches!(resolver.check_dependencies("c"), DependencyStatus::Failed { .. }));
+        assert!(matches!(
+            resolver.check_dependencies("c"),
+            DependencyStatus::Failed { .. }
+        ));
     }
 
     // ------------------------------------------------------------------

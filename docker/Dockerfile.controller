@@ -2,13 +2,42 @@
 FROM rust:1.88-bookworm AS builder
 
 WORKDIR /usr/src/wren
+
+# Layer 1: dependencies only (cached unless Cargo.toml/Cargo.lock change)
 COPY Cargo.toml Cargo.lock ./
+COPY crates/wren-core/Cargo.toml crates/wren-core/Cargo.toml
+COPY crates/wren-scheduler/Cargo.toml crates/wren-scheduler/Cargo.toml
+COPY crates/wren-controller/Cargo.toml crates/wren-controller/Cargo.toml
+COPY crates/wren-cli/Cargo.toml crates/wren-cli/Cargo.toml
+RUN mkdir -p crates/wren-core/src crates/wren-scheduler/src crates/wren-controller/src crates/wren-cli/src \
+    && echo "pub fn stub(){}" > crates/wren-core/src/lib.rs \
+    && echo "pub fn stub(){}" > crates/wren-scheduler/src/lib.rs \
+    && echo "fn main(){}" > crates/wren-controller/src/main.rs \
+    && echo "fn main(){}" > crates/wren-cli/src/main.rs \
+    && cargo build --release --bin wren-controller \
+    && rm -rf crates/
+
+# Layer 2: real source (only this rebuilds on code changes)
 COPY crates/ crates/
+RUN touch crates/wren-core/src/lib.rs crates/wren-scheduler/src/lib.rs \
+          crates/wren-controller/src/main.rs crates/wren-cli/src/main.rs \
+    && cargo build --release --bin wren-controller
 
-RUN cargo build --release --bin wren-controller
+# Stage 2: Runtime with pre-built binary (used by CI with --target runtime-prebuilt)
+FROM debian:bookworm-slim AS runtime-prebuilt
 
-# Stage 2: Runtime
-FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY wren-controller /usr/local/bin/wren-controller
+
+USER 65534:65534
+
+ENTRYPOINT ["wren-controller"]
+
+# Stage 3: Runtime (default target — builds from source)
+FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \

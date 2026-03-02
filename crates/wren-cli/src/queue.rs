@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use wren_core::WrenJob;
 use kube::{
     api::{Api, ListParams},
     Client,
 };
+use wren_core::WrenJob;
 
 /// List WrenJobs with optional queue and namespace filters, formatted as a table.
 pub async fn run(queue: Option<&str>, namespace: Option<&str>) -> Result<()> {

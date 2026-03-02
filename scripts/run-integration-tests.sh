@@ -38,6 +38,11 @@ MANIFEST_DIR="${REPO_ROOT}/manifests"
 DOCKERFILE="${REPO_ROOT}/docker/Dockerfile.controller"
 KIND_CONFIG="${REPO_ROOT}/kind-config.yaml"
 
+# Isolated kubeconfig — ensures all kubectl/kind/cargo commands target only
+# this test cluster and never leak into the user's default config.
+export KUBECONFIG="${LOG_DIR}/kubeconfig"
+export KUBECONFIG_FILE="${KUBECONFIG}"
+
 # Pod label key used by the controller to associate pods with an WrenJob.
 WREN_JOB_LABEL="wren.io/job-name"
 
@@ -306,12 +311,13 @@ setup_cluster() {
 
     if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
         warn "Cluster '${CLUSTER_NAME}' already exists — reusing it"
-        kind export kubeconfig --name "${CLUSTER_NAME}"
+        kind export kubeconfig --name "${CLUSTER_NAME}" --kubeconfig "${KUBECONFIG}"
     else
         log "Creating cluster '${CLUSTER_NAME}' with 4 worker nodes and topology labels ..."
         kind create cluster \
             --name "${CLUSTER_NAME}" \
             --config "${KIND_CONFIG}" \
+            --kubeconfig "${KUBECONFIG}" \
             --wait 60s
         success "Cluster created"
     fi
@@ -335,6 +341,12 @@ build_binary() {
         log "Skipping cargo build (--skip-cargo)"
         return
     fi
+    local bin="${REPO_ROOT}/target/release/wren-controller"
+    if [[ -x "$bin" ]] && [[ "$bin" -nt "${REPO_ROOT}/crates/wren-controller/src/main.rs" ]]; then
+        log "Binary is up-to-date, skipping cargo build"
+        success "Binary exists: ${bin}"
+        return
+    fi
     log "Running: cargo build --release -p wren-controller"
     cargo build --release -p wren-controller \
         --manifest-path "${REPO_ROOT}/Cargo.toml"
@@ -351,8 +363,21 @@ build_binary() {
 build_and_load_image() {
     section "Building Docker image ${IMAGE_REF}"
 
+    local bin="${REPO_ROOT}/target/release/wren-controller"
     if $SKIP_CARGO || [[ "$SKIP_BUILD" == "1" ]]; then
-        log "Skipping Docker build (--skip-cargo)"
+        if [[ -x "$bin" ]]; then
+            log "Using pre-built binary for Docker image"
+            cp "$bin" "${REPO_ROOT}/docker/wren-controller"
+            docker build \
+                -f "${DOCKERFILE}" \
+                --target runtime-prebuilt \
+                -t "${IMAGE_REF}" \
+                "${REPO_ROOT}/docker"
+            rm -f "${REPO_ROOT}/docker/wren-controller"
+            success "Image built (prebuilt binary): ${IMAGE_REF}"
+        else
+            log "Skipping Docker build (--skip-cargo, no binary found)"
+        fi
     else
         log "Building: docker build -f ${DOCKERFILE} -t ${IMAGE_REF} ${REPO_ROOT}"
         docker build \
@@ -395,10 +420,10 @@ install_crds() {
     # Wait for CRDs to become established before proceeding
     log "Waiting for CRDs to be established ..."
     kubectl wait --for=condition=Established \
-        crd/wrenjobs.hpc.cscs.ch \
+        crd/wrenjobs.wren.scops-hpc.com \
         --timeout=30s
     kubectl wait --for=condition=Established \
-        crd/wrenqueues.hpc.cscs.ch \
+        crd/wrenqueues.wren.scops-hpc.com \
         --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
 
     success "CRDs installed (${crd_count} files)"
@@ -449,13 +474,12 @@ deploy_controller() {
         exit 1
     fi
 
-    # Apply manifest then patch imagePullPolicy to Never (required for kind)
-    kubectl apply -f "${deploy_file}"
-    kubectl patch deployment wren-controller \
-        -n "${NAMESPACE}" \
-        --type='json' \
-        -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]' \
-        2>/dev/null || warn "Could not patch imagePullPolicy (deployment may not exist yet — continuing)"
+    # Replace image and imagePullPolicy inline before applying so that only a
+    # single ReplicaSet is created. The previous apply-then-patch approach caused
+    # a transient old ReplicaSet that tried to pull the non-existent default tag.
+    sed -e "s|image: wren-controller:dev|image: ${IMAGE_REF}|" \
+        -e "s|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|" \
+        "${deploy_file}" | kubectl apply -f -
 
     success "Controller manifest applied"
 }
@@ -555,9 +579,16 @@ wait_for_job_state() {
     done
 }
 
-# Helper: delete an WrenJob quietly, ignore not-found errors.
+# Helper: delete a WrenJob and its associated pods quietly, ignore not-found errors.
 delete_job() {
     local job_name="$1"
+    # Delete associated pods first (they may not have ownerReferences)
+    kubectl delete pods \
+        -n "${TEST_NAMESPACE}" \
+        -l "wren.io/job-name=${job_name}" \
+        --ignore-not-found \
+        --timeout=30s 2>/dev/null || true
+    # Then delete the WrenJob
     kubectl delete wrenjob "${job_name}" \
         -n "${TEST_NAMESPACE}" \
         --ignore-not-found \
@@ -571,7 +602,7 @@ _smoke_test_multinode_job() {
     local job_name="smoke-multinode"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -686,7 +717,7 @@ _smoke_test_queue_creation() {
     local queue_name="smoke-queue"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenQueue
 metadata:
   name: ${queue_name}
@@ -739,7 +770,7 @@ _smoke_test_invalid_job() {
     local job_name="smoke-invalid"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -804,7 +835,7 @@ _smoke_test_walltime_job() {
     local job_name="smoke-walltime"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -884,7 +915,7 @@ _smoke_test_concurrent_jobs() {
     log "Submitting 3 WrenJobs concurrently ..."
     for job_name in "${job_names[@]}"; do
         cat <<EOF | kubectl apply -f - &
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -943,7 +974,7 @@ _smoke_test_pod_labels() {
     local job_name="smoke-pod-labels"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1010,7 +1041,7 @@ _smoke_test_headless_service() {
     local job_name="smoke-headless-svc"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1076,7 +1107,7 @@ _smoke_test_deletion_cleanup() {
     local job_name="smoke-cleanup"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1149,7 +1180,7 @@ _smoke_test_pod_preservation() {
     local job_name="smoke-pod-preserve"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1211,7 +1242,7 @@ _smoke_test_job_logs() {
     local expected_output="wren-logs-test-output"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1273,7 +1304,7 @@ EOF
     local multi_job="smoke-logs-multi"
     local multi_manifest
     multi_manifest="$(cat <<EOF
-apiVersion: hpc.cscs.ch/v1alpha1
+apiVersion: wren.scops-hpc.com/v1alpha1
 kind: WrenJob
 metadata:
   name: ${multi_job}
@@ -1373,8 +1404,8 @@ main() {
     build_binary
     build_and_load_image
     install_crds
-    install_rbac
     ensure_namespace
+    install_rbac
     deploy_controller
     wait_for_controller
 

@@ -1,5 +1,5 @@
-use wren_core::{NodeResources, TopologySpec};
 use std::collections::HashMap;
+use wren_core::{NodeResources, TopologySpec};
 
 /// Weights for topology scoring.
 const WEIGHT_SWITCH: f64 = 0.7;
@@ -41,14 +41,11 @@ impl<'a> TopologyScorer<'a> {
             if let Some(node) = self.node_map.get(name.as_str()) {
                 // Resolve switch group: prefer explicit switch_group, fall back to
                 // topology_key label lookup.
-                let switch = node
-                    .switch_group
-                    .clone()
-                    .or_else(|| {
-                        topology_spec
-                            .and_then(|t| t.topology_key.as_deref())
-                            .and_then(|key| node.labels.get(key).cloned())
-                    });
+                let switch = node.switch_group.clone().or_else(|| {
+                    topology_spec
+                        .and_then(|t| t.topology_key.as_deref())
+                        .and_then(|key| node.labels.get(key).cloned())
+                });
 
                 if let Some(sw) = switch {
                     *switch_counts.entry(sw).or_insert(0) += 1;
@@ -103,11 +100,13 @@ impl<'a> TopologyScorer<'a> {
                     return 1;
                 }
 
-                let same_rack = na.rack.is_some()
-                    && nb.rack.is_some()
-                    && na.rack == nb.rack;
+                let same_rack = na.rack.is_some() && nb.rack.is_some() && na.rack == nb.rack;
 
-                if same_rack { 2 } else { 3 }
+                if same_rack {
+                    2
+                } else {
+                    3
+                }
             }
             // If we have no topology info, assume worst case.
             _ => 3,
@@ -233,10 +232,7 @@ mod tests {
 
     #[test]
     fn test_score_no_topology_info() {
-        let nodes = vec![
-            node("n0", None, None),
-            node("n1", None, None),
-        ];
+        let nodes = vec![node("n0", None, None), node("n1", None, None)];
         let scorer = TopologyScorer::new(&nodes);
         let score = scorer.score(&names(&["n0", "n1"]), None);
         assert_eq!(score, 0.0);
@@ -376,6 +372,10 @@ mod tests {
         // Both selected nodes must be on the same switch.
         let scorer = TopologyScorer::new(&cluster.nodes);
         assert!(scorer.check_prefer_same_switch(&placement.nodes));
-        assert!(placement.score > 0.9, "score should be near 1.0, got {}", placement.score);
+        assert!(
+            placement.score > 0.9,
+            "score should be near 1.0, got {}",
+            placement.score
+        );
     }
 }

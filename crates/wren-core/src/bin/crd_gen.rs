@@ -1,5 +1,5 @@
-use wren_core::crd::{WrenJob, WrenQueue};
 use kube::CustomResourceExt;
+use wren_core::crd::{WrenJob, WrenQueue};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

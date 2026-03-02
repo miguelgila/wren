@@ -19,7 +19,7 @@ use kube::{
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
-use wren_core::crd::{WrenJob, WrenJobSpec, WrenQueue, WrenQueueSpec, ContainerSpec};
+use wren_core::crd::{ContainerSpec, WrenJob, WrenJobSpec, WrenQueue, WrenQueueSpec};
 use wren_core::types::{ExecutionBackendType, JobState};
 
 // ---------------------------------------------------------------------------
@@ -205,14 +205,8 @@ async fn cleanup_queue(client: Client, name: &str, namespace: &str) -> anyhow::R
 /// Verify that both `WrenJob` and `WrenQueue` CRDs are registered with the API server.
 async fn ensure_crds_installed(client: Client) -> bool {
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let wrenjob_exists = crd_api
-        .get("wrenjobs.hpc.cscs.ch")
-        .await
-        .is_ok();
-    let queue_exists = crd_api
-        .get("wrenqueues.hpc.cscs.ch")
-        .await
-        .is_ok();
+    let wrenjob_exists = crd_api.get("wrenjobs.wren.scops-hpc.com").await.is_ok();
+    let queue_exists = crd_api.get("wrenqueues.wren.scops-hpc.com").await.is_ok();
     wrenjob_exists && queue_exists
 }
 
@@ -229,7 +223,7 @@ async fn test_wrenjob_crd_registered() {
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("wrenjobs.hpc.cscs.ch").await;
+    let result = crd_api.get("wrenjobs.wren.scops-hpc.com").await;
     assert!(
         result.is_ok(),
         "WrenJob CRD not found — apply manifests/crds/ first"
@@ -245,7 +239,7 @@ async fn test_wrenqueue_crd_registered() {
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("wrenqueues.hpc.cscs.ch").await;
+    let result = crd_api.get("wrenqueues.wren.scops-hpc.com").await;
     assert!(
         result.is_ok(),
         "WrenQueue CRD not found — apply manifests/crds/ first"
@@ -302,7 +296,7 @@ async fn test_wrenjob_default_values() {
     // Post raw JSON with only the mandatory field.
     let api: Api<WrenJob> = Api::namespaced(client.clone(), namespace);
     let raw: WrenJob = serde_json::from_value(json!({
-        "apiVersion": "hpc.cscs.ch/v1alpha1",
+        "apiVersion": "wren.scops-hpc.com/v1alpha1",
         "kind": "WrenJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 1 }
@@ -317,7 +311,10 @@ async fn test_wrenjob_default_values() {
     assert_eq!(created.spec.nodes, 1);
     assert_eq!(created.spec.queue, "default", "default queue should be set");
     assert_eq!(created.spec.priority, 50, "default priority should be 50");
-    assert_eq!(created.spec.tasks_per_node, 1, "default tasks_per_node should be 1");
+    assert_eq!(
+        created.spec.tasks_per_node, 1,
+        "default tasks_per_node should be 1"
+    );
 
     cleanup_job(client, name, namespace).await.expect("cleanup");
 }
@@ -346,7 +343,9 @@ async fn test_create_wrenqueue() {
     assert_eq!(created.metadata.name.as_deref(), Some(name));
     assert_eq!(created.spec.max_nodes, 64);
 
-    cleanup_queue(client, name, namespace).await.expect("cleanup");
+    cleanup_queue(client, name, namespace)
+        .await
+        .expect("cleanup");
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +426,7 @@ async fn test_invalid_job_fails() {
     // The API server may reject it (via webhook validation) or the controller marks it Failed.
     let api: Api<WrenJob> = Api::namespaced(client.clone(), namespace);
     let raw: WrenJob = serde_json::from_value(json!({
-        "apiVersion": "hpc.cscs.ch/v1alpha1",
+        "apiVersion": "wren.scops-hpc.com/v1alpha1",
         "kind": "WrenJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 0 }
@@ -449,9 +448,7 @@ async fn test_invalid_job_fails() {
                 Duration::from_secs(30),
             )
             .await;
-            eprintln!(
-                "invalid job accepted by API server; controller marked Failed: {failed}"
-            );
+            eprintln!("invalid job accepted by API server; controller marked Failed: {failed}");
             // We log rather than assert here because webhook validation is Phase 5.
             cleanup_job(client, name, namespace).await.expect("cleanup");
         }
@@ -510,11 +507,7 @@ async fn test_multiple_jobs_queued() {
     }
 
     let namespace = "default";
-    let names = [
-        "test-queue-job-1",
-        "test-queue-job-2",
-        "test-queue-job-3",
-    ];
+    let names = ["test-queue-job-1", "test-queue-job-2", "test-queue-job-3"];
 
     // Clean up any leftovers.
     for name in &names {
@@ -832,10 +825,7 @@ async fn test_job_runs_to_completion() {
 
     if reached_succeeded {
         let job = api.get(name).await.expect("get job");
-        let completion_time = job
-            .status
-            .as_ref()
-            .and_then(|s| s.completion_time.as_ref());
+        let completion_time = job.status.as_ref().and_then(|s| s.completion_time.as_ref());
         assert!(
             completion_time.is_some(),
             "completionTime should be set after Succeeded"
@@ -970,7 +960,11 @@ async fn test_job_creates_launcher_pod() {
                     .as_ref()
                     .and_then(|l| l.get("wren.io/role"))
                     .map(String::as_str);
-                assert_eq!(role, Some("launcher"), "launcher pod should have role=launcher");
+                assert_eq!(
+                    role,
+                    Some("launcher"),
+                    "launcher pod should have role=launcher"
+                );
             }
             Err(_) => eprintln!(
                 "NOTE: launcher pod name {expected_launcher_name} not found; naming may differ"
@@ -1074,13 +1068,8 @@ async fn test_job_creates_hostfile_configmap() {
     )
     .await;
 
-    let found = wait_for_configmap(
-        client.clone(),
-        namespace,
-        &cm_name,
-        Duration::from_secs(30),
-    )
-    .await;
+    let found =
+        wait_for_configmap(client.clone(), namespace, &cm_name, Duration::from_secs(30)).await;
 
     if !found {
         eprintln!("NOTE: hostfile ConfigMap {cm_name} not found — controller may not be active");
@@ -1385,7 +1374,10 @@ async fn test_high_priority_job() {
         "high-priority job should have a higher priority value"
     );
 
-    eprintln!("low priority: {}, high priority: {}", low.spec.priority, high.spec.priority);
+    eprintln!(
+        "low priority: {}, high priority: {}",
+        low.spec.priority, high.spec.priority
+    );
 
     cleanup_job(client.clone(), low_name, namespace)
         .await
@@ -1416,7 +1408,7 @@ async fn test_wrenqueue_with_policies() {
     let namespace = "default";
     let _ = cleanup_queue(client.clone(), name, namespace).await;
 
-    use wren_core::crd::{BackfillConfig, WrenQueue, WrenQueueSpec, FairShareConfig};
+    use wren_core::crd::{BackfillConfig, FairShareConfig, WrenQueue, WrenQueueSpec};
 
     let queue = WrenQueue {
         metadata: ObjectMeta {
@@ -1458,7 +1450,9 @@ async fn test_wrenqueue_with_policies() {
     assert!(fair_share.enabled);
     assert_eq!(fair_share.decay_half_life.as_deref(), Some("7d"));
 
-    cleanup_queue(client, name, namespace).await.expect("cleanup");
+    cleanup_queue(client, name, namespace)
+        .await
+        .expect("cleanup");
 }
 
 /// Create two queues and verify both exist independently.
@@ -1496,7 +1490,10 @@ async fn test_multiple_queues() {
     assert_eq!(gpu_q.spec.max_nodes, 32);
     assert_eq!(cpu_q.spec.max_nodes, 64);
 
-    eprintln!("gpu queue max_nodes={}, cpu queue max_nodes={}", gpu_q.spec.max_nodes, cpu_q.spec.max_nodes);
+    eprintln!(
+        "gpu queue max_nodes={}, cpu queue max_nodes={}",
+        gpu_q.spec.max_nodes, cpu_q.spec.max_nodes
+    );
 
     cleanup_queue(client.clone(), gpu_name, namespace)
         .await
@@ -1525,17 +1522,26 @@ async fn test_nodes_have_topology_labels() {
         .await
         .expect("list nodes");
 
-    assert!(!nodes.items.is_empty(), "cluster should have at least one node");
+    assert!(
+        !nodes.items.is_empty(),
+        "cluster should have at least one node"
+    );
 
     let mut switch_count = 0usize;
     let mut rack_count = 0usize;
 
     for node in &nodes.items {
         let labels = node.metadata.labels.as_ref();
-        if labels.and_then(|l| l.get("topology.wren.io/switch")).is_some() {
+        if labels
+            .and_then(|l| l.get("topology.wren.io/switch"))
+            .is_some()
+        {
             switch_count += 1;
         }
-        if labels.and_then(|l| l.get("topology.wren.io/rack")).is_some() {
+        if labels
+            .and_then(|l| l.get("topology.wren.io/rack"))
+            .is_some()
+        {
             rack_count += 1;
         }
     }
