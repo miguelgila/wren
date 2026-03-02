@@ -449,13 +449,12 @@ deploy_controller() {
         exit 1
     fi
 
-    # Apply manifest then patch image and imagePullPolicy for kind (local image)
-    kubectl apply -f "${deploy_file}"
-    kubectl patch deployment wren-controller \
-        -n "${NAMESPACE}" \
-        --type='json' \
-        -p="[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/image\",\"value\":\"${IMAGE_REF}\"},{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/imagePullPolicy\",\"value\":\"Never\"}]" \
-        2>/dev/null || warn "Could not patch deployment (deployment may not exist yet — continuing)"
+    # Replace image and imagePullPolicy inline before applying so that only a
+    # single ReplicaSet is created. The previous apply-then-patch approach caused
+    # a transient old ReplicaSet that tried to pull the non-existent default tag.
+    sed -e "s|image: wren-controller:dev|image: ${IMAGE_REF}|" \
+        -e "s|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|" \
+        "${deploy_file}" | kubectl apply -f -
 
     success "Controller manifest applied"
 }
@@ -555,9 +554,16 @@ wait_for_job_state() {
     done
 }
 
-# Helper: delete an WrenJob quietly, ignore not-found errors.
+# Helper: delete a WrenJob and its associated pods quietly, ignore not-found errors.
 delete_job() {
     local job_name="$1"
+    # Delete associated pods first (they may not have ownerReferences)
+    kubectl delete pods \
+        -n "${TEST_NAMESPACE}" \
+        -l "wren.io/job-name=${job_name}" \
+        --ignore-not-found \
+        --timeout=30s 2>/dev/null || true
+    # Then delete the WrenJob
     kubectl delete wrenjob "${job_name}" \
         -n "${TEST_NAMESPACE}" \
         --ignore-not-found \

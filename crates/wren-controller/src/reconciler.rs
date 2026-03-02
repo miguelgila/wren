@@ -226,6 +226,11 @@ async fn handle_scheduling(
                 .scheduling_attempts
                 .with_label_values(&["no_placement"])
                 .inc();
+
+            // Clean up allocations for jobs that no longer exist (e.g. deleted
+            // via kubectl). This prevents resource leaks when handle_terminal
+            // is never called.
+            cleanup_stale_allocations(namespace, ctx).await;
         }
         Err(e) => {
             let scheduling_secs = scheduling_start.elapsed().as_secs_f64();
@@ -402,6 +407,53 @@ async fn handle_terminal(
     }
 
     Ok(())
+}
+
+/// Remove allocations for jobs that no longer exist in the K8s API.
+///
+/// When a WrenJob is deleted directly (e.g. `kubectl delete`), the controller
+/// never runs `handle_terminal` and the in-memory allocations are leaked. This
+/// function detects and releases those stale allocations so the resources become
+/// available for new jobs.
+async fn cleanup_stale_allocations(namespace: &str, ctx: &ReconcilerContext) {
+    let api: Api<WrenJob> = Api::namespaced(ctx.client.clone(), namespace);
+
+    // Collect all unique job names referenced in allocations.
+    let job_names: Vec<String> = {
+        let cluster = ctx.cluster_state.read().await;
+        let mut names = std::collections::HashSet::new();
+        for alloc in cluster.allocations.values() {
+            for job in &alloc.jobs {
+                names.insert(job.clone());
+            }
+        }
+        names.into_iter().collect()
+    };
+
+    for job_name in &job_names {
+        match api.get_opt(job_name).await {
+            Ok(None) => {
+                // Job no longer exists — release its allocations.
+                info!(job = %job_name, "releasing stale allocations for deleted job");
+                let mut cluster = ctx.cluster_state.write().await;
+                let nodes_to_release: Vec<String> = cluster
+                    .allocations
+                    .iter()
+                    .filter(|(_, alloc)| alloc.jobs.contains(job_name))
+                    .map(|(node_name, _)| node_name.clone())
+                    .collect();
+                for node in nodes_to_release {
+                    cluster.deallocate(&node, 1000, 1_000_000_000, 0, job_name);
+                }
+            }
+            Ok(Some(_)) => {
+                // Job still exists — nothing to do.
+            }
+            Err(e) => {
+                warn!(job = %job_name, error = %e, "failed to check job existence for stale allocation cleanup");
+            }
+        }
+    }
 }
 
 /// Helper to patch the WrenJob status subresource.
