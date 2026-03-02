@@ -38,6 +38,11 @@ MANIFEST_DIR="${REPO_ROOT}/manifests"
 DOCKERFILE="${REPO_ROOT}/docker/Dockerfile.controller"
 KIND_CONFIG="${REPO_ROOT}/kind-config.yaml"
 
+# Isolated kubeconfig — ensures all kubectl/kind/cargo commands target only
+# this test cluster and never leak into the user's default config.
+export KUBECONFIG="${LOG_DIR}/kubeconfig"
+export KUBECONFIG_FILE="${KUBECONFIG}"
+
 # Pod label key used by the controller to associate pods with an WrenJob.
 WREN_JOB_LABEL="wren.io/job-name"
 
@@ -306,12 +311,13 @@ setup_cluster() {
 
     if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
         warn "Cluster '${CLUSTER_NAME}' already exists — reusing it"
-        kind export kubeconfig --name "${CLUSTER_NAME}"
+        kind export kubeconfig --name "${CLUSTER_NAME}" --kubeconfig "${KUBECONFIG}"
     else
         log "Creating cluster '${CLUSTER_NAME}' with 4 worker nodes and topology labels ..."
         kind create cluster \
             --name "${CLUSTER_NAME}" \
             --config "${KIND_CONFIG}" \
+            --kubeconfig "${KUBECONFIG}" \
             --wait 60s
         success "Cluster created"
     fi
