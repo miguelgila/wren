@@ -36,7 +36,12 @@ pub(crate) fn format_job_status(
         if let Some(msg) = &s.message {
             writeln!(out, "  Message:     {}", msg).unwrap();
         }
-        writeln!(out, "  Workers:     {}/{}", s.ready_workers, s.total_workers).unwrap();
+        writeln!(
+            out,
+            "  Workers:     {}/{}",
+            s.ready_workers, s.total_workers
+        )
+        .unwrap();
         if let Some(start) = &s.start_time {
             writeln!(out, "  Start Time:  {}", start).unwrap();
         }
@@ -82,9 +87,7 @@ pub async fn run(job: &str, namespace: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wren_core::{
-        ContainerSpec, DependencyType, ExecutionBackendType, JobDependency, JobState,
-    };
+    use wren_core::{ContainerSpec, DependencyType, ExecutionBackendType, JobDependency, JobState};
 
     fn make_spec() -> WrenJobSpec {
         WrenJobSpec {

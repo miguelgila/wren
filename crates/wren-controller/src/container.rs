@@ -659,10 +659,7 @@ mod tests {
     #[test]
     fn test_build_headless_service_name_and_namespace() {
         let svc = build_headless_service("my-job", "my-ns");
-        assert_eq!(
-            svc.metadata.name.as_deref(),
-            Some("my-job-workers")
-        );
+        assert_eq!(svc.metadata.name.as_deref(), Some("my-job-workers"));
         assert_eq!(svc.metadata.namespace.as_deref(), Some("my-ns"));
     }
 
@@ -971,10 +968,7 @@ mod tests {
             make_pod("launcher", None, "Running"),
         ];
         let status = interpret_pod_status(&pods);
-        assert_eq!(
-            status,
-            BackendJobStatus::Launching { ready: 1, total: 2 }
-        );
+        assert_eq!(status, BackendJobStatus::Launching { ready: 1, total: 2 });
     }
 
     #[test]

@@ -272,14 +272,12 @@ async fn handle_running(
         }
         BackendJobStatus::Running => {
             // Check walltime
-            if let Some(msg) = check_walltime_exceeded(
-                spec.walltime.as_deref(),
-                job_status.start_time.as_deref(),
-            ) {
+            if let Some(msg) =
+                check_walltime_exceeded(spec.walltime.as_deref(), job_status.start_time.as_deref())
+            {
                 warn!(job = name, "walltime exceeded, terminating");
                 ctx.backend.terminate(name, namespace).await?;
-                update_status(name, namespace, JobState::WalltimeExceeded, Some(&msg), ctx)
-                    .await?;
+                update_status(name, namespace, JobState::WalltimeExceeded, Some(&msg), ctx).await?;
                 ctx.metrics
                     .record_job_state_change(&spec.queue, "Running", "WalltimeExceeded");
             }
@@ -485,9 +483,13 @@ async fn update_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wren_core::{ContainerSpec, ExecutionBackendType, ClusterState, NodeAllocation};
+    use wren_core::{ClusterState, ContainerSpec, ExecutionBackendType, NodeAllocation};
 
-    fn make_spec(nodes: u32, backend: ExecutionBackendType, container: Option<ContainerSpec>) -> wren_core::WrenJobSpec {
+    fn make_spec(
+        nodes: u32,
+        backend: ExecutionBackendType,
+        container: Option<ContainerSpec>,
+    ) -> wren_core::WrenJobSpec {
         wren_core::WrenJobSpec {
             queue: "default".to_string(),
             priority: 50,
@@ -519,13 +521,21 @@ mod tests {
 
     #[test]
     fn test_validate_job_spec_valid() {
-        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            2,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         assert!(validate_job_spec(&spec).is_ok());
     }
 
     #[test]
     fn test_validate_job_spec_zero_nodes() {
-        let spec = make_spec(0, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            0,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let err = validate_job_spec(&spec).unwrap_err();
         assert!(err.contains("nodes must be > 0"));
     }
@@ -545,7 +555,11 @@ mod tests {
 
     #[test]
     fn test_validate_job_spec_single_node() {
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         assert!(validate_job_spec(&spec).is_ok());
     }
 

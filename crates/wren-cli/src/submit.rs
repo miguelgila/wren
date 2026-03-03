@@ -14,8 +14,7 @@ pub(crate) fn parse_and_override_job(
     queue: Option<&str>,
     nodes: Option<u32>,
 ) -> anyhow::Result<WrenJob> {
-    let mut job: WrenJob =
-        serde_yaml::from_str(yaml).context("failed to parse WrenJob YAML")?;
+    let mut job: WrenJob = serde_yaml::from_str(yaml).context("failed to parse WrenJob YAML")?;
     if let Some(q) = queue {
         job.spec.queue = q.to_string();
     }
