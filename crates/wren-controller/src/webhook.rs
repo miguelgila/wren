@@ -19,7 +19,7 @@ pub struct AdmissionRequest<T> {
     pub object: T,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdmissionResponse {
     pub api_version: String,
@@ -27,7 +27,7 @@ pub struct AdmissionResponse {
     pub response: AdmissionResponseBody,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdmissionResponseBody {
     pub uid: String,
@@ -36,7 +36,7 @@ pub struct AdmissionResponseBody {
     pub status: Option<AdmissionStatus>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AdmissionStatus {
     pub code: u16,
     pub message: String,
@@ -246,6 +246,10 @@ pub async fn serve_webhooks(port: u16) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode as AxumStatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
     use wren_core::{ContainerSpec, DependencyType, JobDependency, ReaperSpec};
 
     fn container_spec(image: &str) -> ContainerSpec {
@@ -527,5 +531,232 @@ mod tests {
         assert!(validate_wrenqueue(&spec).is_ok());
         spec.default_priority = -10000;
         assert!(validate_wrenqueue(&spec).is_ok());
+    }
+
+    // --- admission response helpers ---
+
+    #[test]
+    fn test_admission_allowed_response() {
+        let resp = admission_allowed("uid-123".to_string());
+        assert_eq!(resp.api_version, "admission.k8s.io/v1");
+        assert_eq!(resp.kind, "AdmissionReview");
+        assert_eq!(resp.response.uid, "uid-123");
+        assert!(resp.response.allowed);
+        assert!(resp.response.status.is_none());
+    }
+
+    #[test]
+    fn test_admission_denied_response() {
+        let errors = vec![
+            "nodes must be > 0".to_string(),
+            "queue is empty".to_string(),
+        ];
+        let resp = admission_denied("uid-456".to_string(), errors);
+        assert_eq!(resp.response.uid, "uid-456");
+        assert!(!resp.response.allowed);
+        let status = resp.response.status.unwrap();
+        assert_eq!(status.code, 422);
+        assert!(status.message.contains("nodes must be > 0"));
+        assert!(status.message.contains("queue is empty"));
+        assert!(status.message.contains("; "));
+    }
+
+    #[test]
+    fn test_admission_denied_single_error() {
+        let errors = vec!["single error".to_string()];
+        let resp = admission_denied("uid-789".to_string(), errors);
+        assert!(!resp.response.allowed);
+        let status = resp.response.status.unwrap();
+        assert_eq!(status.message, "single error");
+    }
+
+    // --- AdmissionResponse serialization ---
+
+    #[test]
+    fn test_admission_response_serialization() {
+        let resp = admission_allowed("uid-ser".to_string());
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"apiVersion\":\"admission.k8s.io/v1\""));
+        assert!(json.contains("\"allowed\":true"));
+        assert!(json.contains("\"uid\":\"uid-ser\""));
+    }
+
+    #[test]
+    fn test_admission_denied_serialization_includes_status() {
+        let resp = admission_denied("uid-denied".to_string(), vec!["bad".to_string()]);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"allowed\":false"));
+        assert!(json.contains("\"code\":422"));
+        assert!(json.contains("bad"));
+    }
+
+    // --- handler / router tests ---
+
+    #[tokio::test]
+    async fn test_validate_wrenjob_handler_valid() {
+        let app = webhook_router();
+
+        let body = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid-1",
+                "object": {
+                    "nodes": 4,
+                    "queue": "default",
+                    "tasksPerNode": 1,
+                    "backend": "container",
+                    "container": {
+                        "image": "pytorch:latest",
+                        "command": [],
+                        "args": [],
+                        "hostNetwork": false,
+                        "volumeMounts": [],
+                        "env": []
+                    },
+                    "priority": 50,
+                    "dependencies": []
+                }
+            }
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/validate/wrenjob")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp: AdmissionResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.response.allowed);
+        assert_eq!(resp.response.uid, "test-uid-1");
+    }
+
+    #[tokio::test]
+    async fn test_validate_wrenjob_handler_invalid() {
+        let app = webhook_router();
+
+        let body = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid-2",
+                "object": {
+                    "nodes": 0,
+                    "queue": "default",
+                    "tasksPerNode": 1,
+                    "backend": "container",
+                    "container": {
+                        "image": "pytorch:latest",
+                        "command": [],
+                        "args": [],
+                        "hostNetwork": false,
+                        "volumeMounts": [],
+                        "env": []
+                    },
+                    "priority": 50,
+                    "dependencies": []
+                }
+            }
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/validate/wrenjob")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp: AdmissionResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!resp.response.allowed);
+        assert!(resp.response.status.unwrap().message.contains("nodes"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_wrenqueue_handler_valid() {
+        let app = webhook_router();
+
+        let body = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid-3",
+                "object": {
+                    "maxNodes": 128,
+                    "defaultPriority": 50
+                }
+            }
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/validate/wrenqueue")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp: AdmissionResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.response.allowed);
+        assert_eq!(resp.response.uid, "test-uid-3");
+    }
+
+    #[tokio::test]
+    async fn test_validate_wrenqueue_handler_invalid() {
+        let app = webhook_router();
+
+        let body = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid-4",
+                "object": {
+                    "maxNodes": 0,
+                    "defaultPriority": 50
+                }
+            }
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/validate/wrenqueue")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp: AdmissionResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!resp.response.allowed);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let app = webhook_router();
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/healthz")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body_bytes[..], b"ok");
     }
 }
