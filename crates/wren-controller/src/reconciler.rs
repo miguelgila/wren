@@ -55,27 +55,8 @@ async fn handle_pending(
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
     // Validate the job spec
-    if spec.nodes == 0 {
-        update_status(
-            name,
-            namespace,
-            JobState::Failed,
-            Some("nodes must be > 0"),
-            ctx,
-        )
-        .await?;
-        return Ok(());
-    }
-
-    if spec.backend == wren_core::ExecutionBackendType::Container && spec.container.is_none() {
-        update_status(
-            name,
-            namespace,
-            JobState::Failed,
-            Some("container spec required for container backend"),
-            ctx,
-        )
-        .await?;
+    if let Err(msg) = validate_job_spec(spec) {
+        update_status(name, namespace, JobState::Failed, Some(&msg), ctx).await?;
         return Ok(());
     }
 
@@ -291,36 +272,16 @@ async fn handle_running(
         }
         BackendJobStatus::Running => {
             // Check walltime
-            if let Some(ref wt_str) = spec.walltime {
-                if let Ok(wt) = WalltimeDuration::parse(wt_str) {
-                    if let Some(ref start_str) = job_status.start_time {
-                        if let Ok(start) = chrono::DateTime::parse_from_rfc3339(start_str) {
-                            let elapsed = chrono::Utc::now() - start.with_timezone(&chrono::Utc);
-                            if elapsed.num_seconds() as u64 > wt.seconds {
-                                warn!(
-                                    job = name,
-                                    walltime = %wt,
-                                    elapsed_secs = elapsed.num_seconds(),
-                                    "walltime exceeded, terminating"
-                                );
-                                ctx.backend.terminate(name, namespace).await?;
-                                update_status(
-                                    name,
-                                    namespace,
-                                    JobState::WalltimeExceeded,
-                                    Some(&format!("walltime of {} exceeded", wt)),
-                                    ctx,
-                                )
-                                .await?;
-                                ctx.metrics.record_job_state_change(
-                                    &spec.queue,
-                                    "Running",
-                                    "WalltimeExceeded",
-                                );
-                            }
-                        }
-                    }
-                }
+            if let Some(msg) = check_walltime_exceeded(
+                spec.walltime.as_deref(),
+                job_status.start_time.as_deref(),
+            ) {
+                warn!(job = name, "walltime exceeded, terminating");
+                ctx.backend.terminate(name, namespace).await?;
+                update_status(name, namespace, JobState::WalltimeExceeded, Some(&msg), ctx)
+                    .await?;
+                ctx.metrics
+                    .record_job_state_change(&spec.queue, "Running", "WalltimeExceeded");
             }
         }
         BackendJobStatus::Launching { ready, total } => {
@@ -356,6 +317,63 @@ async fn handle_running(
     Ok(())
 }
 
+/// Validate a WrenJob spec, returning an error message if invalid.
+pub(crate) fn validate_job_spec(spec: &wren_core::WrenJobSpec) -> Result<(), String> {
+    if spec.nodes == 0 {
+        return Err("nodes must be > 0".to_string());
+    }
+    if spec.backend == wren_core::ExecutionBackendType::Container && spec.container.is_none() {
+        return Err("container spec required for container backend".to_string());
+    }
+    Ok(())
+}
+
+/// Check whether a job's walltime has been exceeded.
+/// Returns Some(message) if exceeded, None otherwise.
+pub(crate) fn check_walltime_exceeded(
+    walltime_str: Option<&str>,
+    start_time_str: Option<&str>,
+) -> Option<String> {
+    let wt_str = walltime_str?;
+    let wt = WalltimeDuration::parse(wt_str).ok()?;
+    let start_str = start_time_str?;
+    let start = chrono::DateTime::parse_from_rfc3339(start_str).ok()?;
+    let elapsed = chrono::Utc::now() - start.with_timezone(&chrono::Utc);
+    if elapsed.num_seconds() as u64 > wt.seconds {
+        Some(format!("walltime of {} exceeded", wt))
+    } else {
+        None
+    }
+}
+
+/// Check whether completed pods should be cleaned up based on the TTL.
+/// Uses completion_time if available, otherwise start_time.
+pub(crate) fn should_cleanup_pods(status: &WrenJobStatus) -> bool {
+    let finished_at = status
+        .completion_time
+        .as_deref()
+        .or(status.start_time.as_deref());
+
+    if let Some(time_str) = finished_at {
+        if let Ok(finished) = chrono::DateTime::parse_from_rfc3339(time_str) {
+            let elapsed = chrono::Utc::now() - finished.with_timezone(&chrono::Utc);
+            return elapsed.num_seconds() as u64 > POD_TTL_AFTER_FINISHED.as_secs();
+        }
+    }
+    false
+}
+
+/// Collect unique job names from cluster allocations.
+pub(crate) fn collect_allocated_job_names(cluster: &ClusterState) -> Vec<String> {
+    let mut names = std::collections::HashSet::new();
+    for alloc in cluster.allocations.values() {
+        for job in &alloc.jobs {
+            names.insert(job.clone());
+        }
+    }
+    names.into_iter().collect()
+}
+
 /// How long completed pods are preserved for log retrieval before deletion.
 const POD_TTL_AFTER_FINISHED: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60); // 24 hours
 
@@ -388,21 +406,10 @@ async fn handle_terminal(
     }
 
     // Check if pods should be cleaned up based on TTL.
-    // Use completion_time if available, otherwise start_time.
-    let finished_at = status
-        .completion_time
-        .as_deref()
-        .or(status.start_time.as_deref());
-
-    if let Some(time_str) = finished_at {
-        if let Ok(finished) = chrono::DateTime::parse_from_rfc3339(time_str) {
-            let elapsed = chrono::Utc::now() - finished.with_timezone(&chrono::Utc);
-            if elapsed.num_seconds() as u64 > POD_TTL_AFTER_FINISHED.as_secs() {
-                info!(job = name, "pod TTL expired, cleaning up pods");
-                if let Err(e) = ctx.backend.terminate(name, namespace).await {
-                    warn!(job = name, error = %e, "failed to delete expired pods");
-                }
-            }
+    if should_cleanup_pods(status) {
+        info!(job = name, "pod TTL expired, cleaning up pods");
+        if let Err(e) = ctx.backend.terminate(name, namespace).await {
+            warn!(job = name, error = %e, "failed to delete expired pods");
         }
     }
 
@@ -421,13 +428,7 @@ async fn cleanup_stale_allocations(namespace: &str, ctx: &ReconcilerContext) {
     // Collect all unique job names referenced in allocations.
     let job_names: Vec<String> = {
         let cluster = ctx.cluster_state.read().await;
-        let mut names = std::collections::HashSet::new();
-        for alloc in cluster.allocations.values() {
-            for job in &alloc.jobs {
-                names.insert(job.clone());
-            }
-        }
-        names.into_iter().collect()
+        collect_allocated_job_names(&cluster)
     };
 
     for job_name in &job_names {
@@ -479,4 +480,199 @@ async fn update_status(
     .await
     .map_err(WrenError::KubeError)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wren_core::{ContainerSpec, ExecutionBackendType, ClusterState, NodeAllocation};
+
+    fn make_spec(nodes: u32, backend: ExecutionBackendType, container: Option<ContainerSpec>) -> wren_core::WrenJobSpec {
+        wren_core::WrenJobSpec {
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: None,
+            nodes,
+            tasks_per_node: 1,
+            backend,
+            container,
+            reaper: None,
+            mpi: None,
+            topology: None,
+            dependencies: vec![],
+        }
+    }
+
+    fn make_container_spec() -> ContainerSpec {
+        ContainerSpec {
+            image: "busybox".to_string(),
+            command: vec![],
+            args: vec![],
+            resources: None,
+            host_network: false,
+            volume_mounts: vec![],
+            env: vec![],
+        }
+    }
+
+    // --- validate_job_spec tests ---
+
+    #[test]
+    fn test_validate_job_spec_valid() {
+        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        assert!(validate_job_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn test_validate_job_spec_zero_nodes() {
+        let spec = make_spec(0, ExecutionBackendType::Container, Some(make_container_spec()));
+        let err = validate_job_spec(&spec).unwrap_err();
+        assert!(err.contains("nodes must be > 0"));
+    }
+
+    #[test]
+    fn test_validate_job_spec_container_backend_no_spec() {
+        let spec = make_spec(2, ExecutionBackendType::Container, None);
+        let err = validate_job_spec(&spec).unwrap_err();
+        assert!(err.contains("container spec required"));
+    }
+
+    #[test]
+    fn test_validate_job_spec_reaper_backend_no_container_ok() {
+        let spec = make_spec(2, ExecutionBackendType::Reaper, None);
+        assert!(validate_job_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn test_validate_job_spec_single_node() {
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        assert!(validate_job_spec(&spec).is_ok());
+    }
+
+    // --- check_walltime_exceeded tests ---
+
+    #[test]
+    fn test_check_walltime_no_walltime() {
+        assert!(check_walltime_exceeded(None, Some("2024-01-01T00:00:00Z")).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_no_start_time() {
+        assert!(check_walltime_exceeded(Some("1h"), None).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_not_exceeded() {
+        // Start time is now, walltime is 1h - should not be exceeded
+        let now = chrono::Utc::now().to_rfc3339();
+        assert!(check_walltime_exceeded(Some("1h"), Some(&now)).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_exceeded() {
+        // Start time is 2 hours ago, walltime is 1h - should be exceeded
+        let two_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let result = check_walltime_exceeded(Some("1h"), Some(&two_hours_ago));
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("walltime of"));
+    }
+
+    #[test]
+    fn test_check_walltime_invalid_walltime_string() {
+        let now = chrono::Utc::now().to_rfc3339();
+        assert!(check_walltime_exceeded(Some("not-a-duration"), Some(&now)).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_invalid_start_time() {
+        assert!(check_walltime_exceeded(Some("1h"), Some("not-a-timestamp")).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_both_none() {
+        assert!(check_walltime_exceeded(None, None).is_none());
+    }
+
+    // --- should_cleanup_pods tests ---
+
+    #[test]
+    fn test_should_cleanup_no_times() {
+        let status = WrenJobStatus::default();
+        assert!(!should_cleanup_pods(&status));
+    }
+
+    #[test]
+    fn test_should_cleanup_recent_completion() {
+        let status = WrenJobStatus {
+            completion_time: Some(chrono::Utc::now().to_rfc3339()),
+            ..Default::default()
+        };
+        assert!(!should_cleanup_pods(&status));
+    }
+
+    #[test]
+    fn test_should_cleanup_old_completion() {
+        // 25 hours ago (TTL is 24h)
+        let old = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+        let status = WrenJobStatus {
+            completion_time: Some(old),
+            ..Default::default()
+        };
+        assert!(should_cleanup_pods(&status));
+    }
+
+    #[test]
+    fn test_should_cleanup_falls_back_to_start_time() {
+        let old = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+        let status = WrenJobStatus {
+            completion_time: None,
+            start_time: Some(old),
+            ..Default::default()
+        };
+        assert!(should_cleanup_pods(&status));
+    }
+
+    #[test]
+    fn test_should_cleanup_invalid_time() {
+        let status = WrenJobStatus {
+            completion_time: Some("invalid".to_string()),
+            ..Default::default()
+        };
+        assert!(!should_cleanup_pods(&status));
+    }
+
+    // --- collect_allocated_job_names tests ---
+
+    #[test]
+    fn test_collect_allocated_job_names_empty() {
+        let cluster = ClusterState::default();
+        let names = collect_allocated_job_names(&cluster);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_collect_allocated_job_names_with_allocations() {
+        let mut cluster = ClusterState::default();
+        cluster.allocations.insert(
+            "node-0".to_string(),
+            NodeAllocation {
+                used_cpu_millis: 1000,
+                used_memory_bytes: 1_000_000_000,
+                used_gpus: 0,
+                jobs: vec!["job-a".to_string(), "job-b".to_string()],
+            },
+        );
+        cluster.allocations.insert(
+            "node-1".to_string(),
+            NodeAllocation {
+                used_cpu_millis: 1000,
+                used_memory_bytes: 1_000_000_000,
+                used_gpus: 0,
+                jobs: vec!["job-a".to_string()],
+            },
+        );
+        let mut names = collect_allocated_job_names(&cluster);
+        names.sort();
+        assert_eq!(names, vec!["job-a", "job-b"]);
+    }
 }

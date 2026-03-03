@@ -21,6 +21,309 @@ fn needs_mpi_launcher(spec: &wren_core::WrenJobSpec) -> bool {
     spec.mpi.is_some()
 }
 
+/// Build a headless Service object for worker pod DNS discovery.
+pub(crate) fn build_headless_service(job_name: &str, namespace: &str) -> Service {
+    let svc_name = mpi::headless_service_name(job_name);
+    let labels = mpi::job_labels(job_name, "worker", None);
+
+    Service {
+        metadata: ObjectMeta {
+            name: Some(svc_name),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels.clone()),
+            ..Default::default()
+        },
+        spec: Some(ServiceSpec {
+            cluster_ip: Some("None".to_string()),
+            selector: Some(labels),
+            ports: Some(vec![ServicePort {
+                port: 22,
+                name: Some("ssh".to_string()),
+                target_port: Some(IntOrString::Int(22)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Build a hostfile ConfigMap object.
+pub(crate) fn build_hostfile_configmap(
+    job_name: &str,
+    namespace: &str,
+    placement: &Placement,
+    tasks_per_node: u32,
+) -> ConfigMap {
+    let cm_name = mpi::hostfile_configmap_name(job_name);
+    let hostfile_content = mpi::generate_hostfile(placement, tasks_per_node);
+
+    let mut data = BTreeMap::new();
+    data.insert("hostfile".to_string(), hostfile_content);
+
+    ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(cm_name),
+            namespace: Some(namespace.to_string()),
+            labels: Some(mpi::job_labels(job_name, "config", None)),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    }
+}
+
+/// Build a worker Pod object for a specific node and rank.
+pub(crate) fn build_worker_pod(
+    job_name: &str,
+    namespace: &str,
+    spec: &WrenJobSpec,
+    node_name: &str,
+    rank: u32,
+) -> Result<Pod, WrenError> {
+    let pod_name = mpi::worker_pod_name(job_name, rank);
+    let labels = mpi::job_labels(job_name, "worker", Some(rank));
+
+    let container_spec = spec
+        .container
+        .as_ref()
+        .ok_or_else(|| WrenError::ValidationError {
+            reason: "container spec required for container backend".to_string(),
+        })?;
+
+    let mut env_vars: Vec<EnvVar> = container_spec
+        .env
+        .iter()
+        .map(|e| EnvVar {
+            name: e.name.clone(),
+            value: Some(e.value.clone()),
+            ..Default::default()
+        })
+        .collect();
+
+    env_vars.push(EnvVar {
+        name: "WREN_RANK".to_string(),
+        value: Some(rank.to_string()),
+        ..Default::default()
+    });
+    env_vars.push(EnvVar {
+        name: "WREN_JOB_NAME".to_string(),
+        value: Some(job_name.to_string()),
+        ..Default::default()
+    });
+
+    let container = Container {
+        name: "worker".to_string(),
+        image: Some(container_spec.image.clone()),
+        command: if container_spec.command.is_empty() {
+            None
+        } else {
+            Some(container_spec.command.clone())
+        },
+        args: if container_spec.args.is_empty() {
+            None
+        } else {
+            Some(container_spec.args.clone())
+        },
+        env: Some(env_vars),
+        ports: Some(vec![ContainerPort {
+            container_port: 22,
+            name: Some("ssh".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let svc_name = mpi::headless_service_name(job_name);
+
+    Ok(Pod {
+        metadata: ObjectMeta {
+            name: Some(pod_name.clone()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            containers: vec![container],
+            hostname: Some(pod_name),
+            subdomain: Some(svc_name),
+            node_name: Some(node_name.to_string()),
+            restart_policy: Some("Never".to_string()),
+            host_network: if container_spec.host_network {
+                Some(true)
+            } else {
+                None
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Build the launcher Pod object that runs the MPI command.
+pub(crate) fn build_launcher_pod(
+    job_name: &str,
+    namespace: &str,
+    spec: &WrenJobSpec,
+    placement: &Placement,
+) -> Result<Pod, WrenError> {
+    let pod_name = mpi::launcher_pod_name(job_name);
+    let labels = mpi::job_labels(job_name, "launcher", None);
+
+    let container_spec = spec
+        .container
+        .as_ref()
+        .ok_or_else(|| WrenError::ValidationError {
+            reason: "container spec required for container backend".to_string(),
+        })?;
+
+    let hostfile_path = "/etc/wren/hostfile";
+    let mut command = mpi::mpirun_args(spec, hostfile_path);
+
+    // Append user command/args after mpirun flags
+    if !container_spec.command.is_empty() {
+        command.extend(container_spec.command.clone());
+    }
+    if !container_spec.args.is_empty() {
+        command.extend(container_spec.args.clone());
+    }
+
+    let env_vars = vec![
+        EnvVar {
+            name: "WREN_JOB_NAME".to_string(),
+            value: Some(job_name.to_string()),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "WREN_NUM_NODES".to_string(),
+            value: Some(spec.nodes.to_string()),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "WREN_TOTAL_RANKS".to_string(),
+            value: Some(mpi::total_ranks(spec).to_string()),
+            ..Default::default()
+        },
+    ];
+
+    let container = Container {
+        name: "launcher".to_string(),
+        image: Some(container_spec.image.clone()),
+        command: Some(command),
+        env: Some(env_vars),
+        ..Default::default()
+    };
+
+    // Launch on the first node in the placement
+    let launcher_node = placement.nodes.first().cloned();
+
+    Ok(Pod {
+        metadata: ObjectMeta {
+            name: Some(pod_name),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            containers: vec![container],
+            node_name: launcher_node,
+            restart_policy: Some("Never".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Interprets the status of a job from its pods.
+/// Separated from the async `status()` method for testability.
+pub(crate) fn interpret_pod_status(pods: &[Pod]) -> BackendJobStatus {
+    if pods.is_empty() {
+        return BackendJobStatus::NotFound;
+    }
+
+    let workers: Vec<&Pod> = pods
+        .iter()
+        .filter(|p| {
+            p.metadata
+                .labels
+                .as_ref()
+                .and_then(|l| l.get("wren.giar.dev/role"))
+                == Some(&"worker".to_string())
+        })
+        .collect();
+
+    let launcher: Option<&Pod> = pods.iter().find(|p| {
+        p.metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get("wren.giar.dev/role"))
+            == Some(&"launcher".to_string())
+    });
+
+    if let Some(launcher_pod) = launcher {
+        // MPI launcher pattern: launcher pod drives completion
+        if let Some(status) = &launcher_pod.status {
+            if let Some(phase) = &status.phase {
+                match phase.as_str() {
+                    "Succeeded" => return BackendJobStatus::Succeeded,
+                    "Failed" => {
+                        let msg = status
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "launcher pod failed".to_string());
+                        return BackendJobStatus::Failed { message: msg };
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Count ready workers
+        let ready = workers
+            .iter()
+            .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
+            .count() as u32;
+
+        let total = workers.len() as u32;
+
+        if ready == total && total > 0 {
+            BackendJobStatus::Running
+        } else {
+            BackendJobStatus::Launching { ready, total }
+        }
+    } else {
+        // Simple mode (no launcher): worker pods drive completion
+        let total = workers.len() as u32;
+        let succeeded = workers
+            .iter()
+            .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Succeeded"))
+            .count() as u32;
+        let failed = workers
+            .iter()
+            .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Failed"))
+            .count() as u32;
+        let running = workers
+            .iter()
+            .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
+            .count() as u32;
+
+        if failed > 0 {
+            BackendJobStatus::Failed {
+                message: format!("{} of {} worker pods failed", failed, total),
+            }
+        } else if succeeded == total && total > 0 {
+            BackendJobStatus::Succeeded
+        } else if running > 0 || succeeded > 0 {
+            BackendJobStatus::Running
+        } else {
+            BackendJobStatus::Launching {
+                ready: running + succeeded,
+                total,
+            }
+        }
+    }
+}
+
 /// Container-based execution backend.
 /// Creates Pods + Services for MPI worker/launcher pattern.
 /// For simple single-node jobs without MPI, runs the user command directly.
@@ -40,31 +343,8 @@ impl ContainerBackend {
         namespace: &str,
     ) -> Result<(), WrenError> {
         let svc_api: Api<Service> = Api::namespaced(self.client.clone(), namespace);
-        let svc_name = mpi::headless_service_name(job_name);
-
-        let labels = mpi::job_labels(job_name, "worker", None);
-
-        let svc = Service {
-            metadata: ObjectMeta {
-                name: Some(svc_name.clone()),
-                namespace: Some(namespace.to_string()),
-                labels: Some(labels.clone()),
-                ..Default::default()
-            },
-            spec: Some(ServiceSpec {
-                cluster_ip: Some("None".to_string()),
-                selector: Some(labels),
-                ports: Some(vec![ServicePort {
-                    port: 22,
-                    name: Some("ssh".to_string()),
-                    target_port: Some(IntOrString::Int(22)),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
+        let svc = build_headless_service(job_name, namespace);
+        let svc_name = svc.metadata.name.clone().unwrap_or_default();
         match svc_api.create(&PostParams::default(), &svc).await {
             Ok(_) => debug!(service = %svc_name, "created headless service"),
             Err(kube::Error::Api(ref err)) if err.code == 409 => {
@@ -84,23 +364,8 @@ impl ContainerBackend {
         tasks_per_node: u32,
     ) -> Result<(), WrenError> {
         let cm_api: Api<ConfigMap> = Api::namespaced(self.client.clone(), namespace);
-        let cm_name = mpi::hostfile_configmap_name(job_name);
-        let hostfile_content = mpi::generate_hostfile(placement, tasks_per_node);
-
-        let mut data = BTreeMap::new();
-        data.insert("hostfile".to_string(), hostfile_content);
-
-        let cm = ConfigMap {
-            metadata: ObjectMeta {
-                name: Some(cm_name.clone()),
-                namespace: Some(namespace.to_string()),
-                labels: Some(mpi::job_labels(job_name, "config", None)),
-                ..Default::default()
-            },
-            data: Some(data),
-            ..Default::default()
-        };
-
+        let cm = build_hostfile_configmap(job_name, namespace, placement, tasks_per_node);
+        let cm_name = cm.metadata.name.clone().unwrap_or_default();
         match cm_api.create(&PostParams::default(), &cm).await {
             Ok(_) => debug!(configmap = %cm_name, "created hostfile configmap"),
             Err(kube::Error::Api(ref err)) if err.code == 409 => {
@@ -121,84 +386,8 @@ impl ContainerBackend {
         rank: u32,
     ) -> Result<String, WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let pod_name = mpi::worker_pod_name(job_name, rank);
-        let labels = mpi::job_labels(job_name, "worker", Some(rank));
-
-        let container_spec = spec
-            .container
-            .as_ref()
-            .ok_or_else(|| WrenError::ValidationError {
-                reason: "container spec required for container backend".to_string(),
-            })?;
-
-        let mut env_vars: Vec<EnvVar> = container_spec
-            .env
-            .iter()
-            .map(|e| EnvVar {
-                name: e.name.clone(),
-                value: Some(e.value.clone()),
-                ..Default::default()
-            })
-            .collect();
-
-        env_vars.push(EnvVar {
-            name: "WREN_RANK".to_string(),
-            value: Some(rank.to_string()),
-            ..Default::default()
-        });
-        env_vars.push(EnvVar {
-            name: "WREN_JOB_NAME".to_string(),
-            value: Some(job_name.to_string()),
-            ..Default::default()
-        });
-
-        let container = Container {
-            name: "worker".to_string(),
-            image: Some(container_spec.image.clone()),
-            command: if container_spec.command.is_empty() {
-                None
-            } else {
-                Some(container_spec.command.clone())
-            },
-            args: if container_spec.args.is_empty() {
-                None
-            } else {
-                Some(container_spec.args.clone())
-            },
-            env: Some(env_vars),
-            ports: Some(vec![ContainerPort {
-                container_port: 22,
-                name: Some("ssh".to_string()),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-
-        let svc_name = mpi::headless_service_name(job_name);
-
-        let pod = Pod {
-            metadata: ObjectMeta {
-                name: Some(pod_name.clone()),
-                namespace: Some(namespace.to_string()),
-                labels: Some(labels),
-                ..Default::default()
-            },
-            spec: Some(PodSpec {
-                containers: vec![container],
-                hostname: Some(pod_name.clone()),
-                subdomain: Some(svc_name),
-                node_name: Some(node_name.to_string()),
-                restart_policy: Some("Never".to_string()),
-                host_network: if container_spec.host_network {
-                    Some(true)
-                } else {
-                    None
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
+        let pod = build_worker_pod(job_name, namespace, spec, node_name, rank)?;
+        let pod_name = pod.metadata.name.clone().unwrap_or_default();
         match pod_api.create(&PostParams::default(), &pod).await {
             Ok(_) => debug!(pod = %pod_name, node = %node_name, rank, "created worker pod"),
             Err(kube::Error::Api(ref err)) if err.code == 409 => {
@@ -219,72 +408,8 @@ impl ContainerBackend {
         placement: &Placement,
     ) -> Result<String, WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let pod_name = mpi::launcher_pod_name(job_name);
-        let labels = mpi::job_labels(job_name, "launcher", None);
-
-        let container_spec = spec
-            .container
-            .as_ref()
-            .ok_or_else(|| WrenError::ValidationError {
-                reason: "container spec required for container backend".to_string(),
-            })?;
-
-        let hostfile_path = "/etc/wren/hostfile";
-        let mut command = mpi::mpirun_args(spec, hostfile_path);
-
-        // Append user command/args after mpirun flags
-        if !container_spec.command.is_empty() {
-            command.extend(container_spec.command.clone());
-        }
-        if !container_spec.args.is_empty() {
-            command.extend(container_spec.args.clone());
-        }
-
-        let env_vars = vec![
-            EnvVar {
-                name: "WREN_JOB_NAME".to_string(),
-                value: Some(job_name.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "WREN_NUM_NODES".to_string(),
-                value: Some(spec.nodes.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "WREN_TOTAL_RANKS".to_string(),
-                value: Some(mpi::total_ranks(spec).to_string()),
-                ..Default::default()
-            },
-        ];
-
-        let container = Container {
-            name: "launcher".to_string(),
-            image: Some(container_spec.image.clone()),
-            command: Some(command),
-            env: Some(env_vars),
-            ..Default::default()
-        };
-
-        // Launch on the first node in the placement
-        let launcher_node = placement.nodes.first().cloned();
-
-        let pod = Pod {
-            metadata: ObjectMeta {
-                name: Some(pod_name.clone()),
-                namespace: Some(namespace.to_string()),
-                labels: Some(labels),
-                ..Default::default()
-            },
-            spec: Some(PodSpec {
-                containers: vec![container],
-                node_name: launcher_node,
-                restart_policy: Some("Never".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
+        let pod = build_launcher_pod(job_name, namespace, spec, placement)?;
+        let pod_name = pod.metadata.name.clone().unwrap_or_default();
         match pod_api.create(&PostParams::default(), &pod).await {
             Ok(_) => debug!(pod = %pod_name, "created launcher pod"),
             Err(kube::Error::Api(ref err)) if err.code == 409 => {
@@ -367,93 +492,7 @@ impl ExecutionBackend for ContainerBackend {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
         let lp = ListParams::default().labels(&format!("wren.giar.dev/job-name={}", job_name));
         let pods = pod_api.list(&lp).await.map_err(WrenError::KubeError)?;
-
-        if pods.items.is_empty() {
-            return Ok(BackendJobStatus::NotFound);
-        }
-
-        let workers: Vec<&Pod> = pods
-            .items
-            .iter()
-            .filter(|p| {
-                p.metadata
-                    .labels
-                    .as_ref()
-                    .and_then(|l| l.get("wren.giar.dev/role"))
-                    == Some(&"worker".to_string())
-            })
-            .collect();
-
-        let launcher: Option<&Pod> = pods.items.iter().find(|p| {
-            p.metadata
-                .labels
-                .as_ref()
-                .and_then(|l| l.get("wren.giar.dev/role"))
-                == Some(&"launcher".to_string())
-        });
-
-        if let Some(launcher_pod) = launcher {
-            // MPI launcher pattern: launcher pod drives completion
-            if let Some(status) = &launcher_pod.status {
-                if let Some(phase) = &status.phase {
-                    match phase.as_str() {
-                        "Succeeded" => return Ok(BackendJobStatus::Succeeded),
-                        "Failed" => {
-                            let msg = status
-                                .message
-                                .clone()
-                                .unwrap_or_else(|| "launcher pod failed".to_string());
-                            return Ok(BackendJobStatus::Failed { message: msg });
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // Count ready workers
-            let ready = workers
-                .iter()
-                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
-                .count() as u32;
-
-            let total = workers.len() as u32;
-
-            if ready == total && total > 0 {
-                Ok(BackendJobStatus::Running)
-            } else {
-                Ok(BackendJobStatus::Launching { ready, total })
-            }
-        } else {
-            // Simple mode (no launcher): worker pods drive completion
-            let total = workers.len() as u32;
-            let succeeded = workers
-                .iter()
-                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Succeeded"))
-                .count() as u32;
-            let failed = workers
-                .iter()
-                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Failed"))
-                .count() as u32;
-            let running = workers
-                .iter()
-                .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
-                .count() as u32;
-
-            if failed > 0 {
-                Ok(BackendJobStatus::Failed {
-                    message: format!("{} of {} worker pods failed", failed, total),
-                })
-            } else if succeeded == total && total > 0 {
-                Ok(BackendJobStatus::Succeeded)
-            } else if running > 0 || succeeded > 0 {
-                Ok(BackendJobStatus::Running)
-            } else {
-                Ok(BackendJobStatus::Launching {
-                    ready: running + succeeded,
-                    total,
-                })
-            }
-        }
+        Ok(interpret_pod_status(&pods.items))
     }
 
     async fn terminate(&self, job_name: &str, namespace: &str) -> Result<(), WrenError> {
@@ -500,7 +539,8 @@ impl ExecutionBackend for ContainerBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wren_core::{ContainerSpec, ExecutionBackendType, MPISpec};
+    use k8s_openapi::api::core::v1::PodStatus;
+    use wren_core::{ContainerSpec, EnvVar as WrenEnvVar, ExecutionBackendType, MPISpec};
 
     fn make_spec_no_mpi() -> wren_core::WrenJobSpec {
         wren_core::WrenJobSpec {
@@ -554,6 +594,36 @@ mod tests {
         }
     }
 
+    fn make_placement(nodes: &[&str]) -> Placement {
+        Placement {
+            nodes: nodes.iter().map(|s| s.to_string()).collect(),
+            score: 1.0,
+        }
+    }
+
+    fn make_pod(role: &str, rank: Option<u32>, phase: &str) -> Pod {
+        let mut labels = BTreeMap::new();
+        labels.insert("wren.giar.dev/role".to_string(), role.to_string());
+        labels.insert("wren.giar.dev/job-name".to_string(), "test-job".to_string());
+        if let Some(r) = rank {
+            labels.insert("wren.giar.dev/rank".to_string(), r.to_string());
+        }
+        Pod {
+            metadata: ObjectMeta {
+                name: Some(format!("test-job-{}-{}", role, rank.unwrap_or(0))),
+                labels: Some(labels),
+                ..Default::default()
+            },
+            status: Some(PodStatus {
+                phase: Some(phase.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    // --- needs_mpi_launcher tests ---
+
     #[test]
     fn test_needs_mpi_launcher_without_mpi_spec_returns_false() {
         let spec = make_spec_no_mpi();
@@ -582,5 +652,368 @@ mod tests {
             fabric_interface: Some("hsn0".to_string()),
         });
         assert!(needs_mpi_launcher(&spec));
+    }
+
+    // --- build_headless_service tests ---
+
+    #[test]
+    fn test_build_headless_service_name_and_namespace() {
+        let svc = build_headless_service("my-job", "my-ns");
+        assert_eq!(
+            svc.metadata.name.as_deref(),
+            Some("my-job-workers")
+        );
+        assert_eq!(svc.metadata.namespace.as_deref(), Some("my-ns"));
+    }
+
+    #[test]
+    fn test_build_headless_service_cluster_ip_none() {
+        let svc = build_headless_service("my-job", "default");
+        let spec = svc.spec.unwrap();
+        assert_eq!(spec.cluster_ip.as_deref(), Some("None"));
+    }
+
+    #[test]
+    fn test_build_headless_service_labels() {
+        let svc = build_headless_service("my-job", "default");
+        let labels = svc.metadata.labels.unwrap();
+        assert_eq!(labels["wren.giar.dev/job-name"], "my-job");
+        assert_eq!(labels["wren.giar.dev/role"], "worker");
+        assert_eq!(labels["app.kubernetes.io/managed-by"], "wren");
+    }
+
+    #[test]
+    fn test_build_headless_service_ports() {
+        let svc = build_headless_service("my-job", "default");
+        let ports = svc.spec.unwrap().ports.unwrap();
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].port, 22);
+        assert_eq!(ports[0].name.as_deref(), Some("ssh"));
+    }
+
+    // --- build_hostfile_configmap tests ---
+
+    #[test]
+    fn test_build_hostfile_configmap_single_node() {
+        let placement = make_placement(&["node-0"]);
+        let cm = build_hostfile_configmap("my-job", "default", &placement, 1);
+        let data = cm.data.unwrap();
+        assert_eq!(data["hostfile"], "node-0 slots=1");
+    }
+
+    #[test]
+    fn test_build_hostfile_configmap_multi_node() {
+        let placement = make_placement(&["node-0", "node-1", "node-2", "node-3"]);
+        let cm = build_hostfile_configmap("sim", "hpc", &placement, 8);
+        let data = cm.data.unwrap();
+        assert_eq!(
+            data["hostfile"],
+            "node-0 slots=8\nnode-1 slots=8\nnode-2 slots=8\nnode-3 slots=8"
+        );
+    }
+
+    #[test]
+    fn test_build_hostfile_configmap_labels() {
+        let placement = make_placement(&["node-0"]);
+        let cm = build_hostfile_configmap("my-job", "default", &placement, 1);
+        let labels = cm.metadata.labels.unwrap();
+        assert_eq!(labels["wren.giar.dev/job-name"], "my-job");
+        assert_eq!(labels["wren.giar.dev/role"], "config");
+        assert_eq!(labels["app.kubernetes.io/managed-by"], "wren");
+    }
+
+    #[test]
+    fn test_build_hostfile_configmap_name() {
+        let placement = make_placement(&["node-0"]);
+        let cm = build_hostfile_configmap("my-job", "default", &placement, 1);
+        assert_eq!(cm.metadata.name.as_deref(), Some("my-job-hostfile"));
+    }
+
+    // --- build_worker_pod tests ---
+
+    #[test]
+    fn test_build_worker_pod_name_and_labels() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        assert_eq!(pod.metadata.name.as_deref(), Some("my-job-worker-0"));
+        let labels = pod.metadata.labels.unwrap();
+        assert_eq!(labels["wren.giar.dev/job-name"], "my-job");
+        assert_eq!(labels["wren.giar.dev/role"], "worker");
+        assert_eq!(labels["wren.giar.dev/rank"], "0");
+    }
+
+    #[test]
+    fn test_build_worker_pod_node_affinity() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-42", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.node_name.as_deref(), Some("node-42"));
+    }
+
+    #[test]
+    fn test_build_worker_pod_env_vars() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 3).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        let rank_var = env.iter().find(|e| e.name == "WREN_RANK").unwrap();
+        assert_eq!(rank_var.value.as_deref(), Some("3"));
+        let job_var = env.iter().find(|e| e.name == "WREN_JOB_NAME").unwrap();
+        assert_eq!(job_var.value.as_deref(), Some("my-job"));
+    }
+
+    #[test]
+    fn test_build_worker_pod_user_env_vars() {
+        let mut spec = make_spec_no_mpi();
+        spec.container = Some(ContainerSpec {
+            image: "busybox".to_string(),
+            command: vec![],
+            args: vec![],
+            resources: None,
+            host_network: false,
+            volume_mounts: vec![],
+            env: vec![WrenEnvVar {
+                name: "MY_VAR".to_string(),
+                value: "hello".to_string(),
+            }],
+        });
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        let user_var = env.iter().find(|e| e.name == "MY_VAR").unwrap();
+        assert_eq!(user_var.value.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_build_worker_pod_host_network_true() {
+        let mut spec = make_spec_no_mpi();
+        spec.container.as_mut().unwrap().host_network = true;
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.host_network, Some(true));
+    }
+
+    #[test]
+    fn test_build_worker_pod_host_network_false() {
+        let spec = make_spec_no_mpi(); // host_network = false
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.host_network, None);
+    }
+
+    #[test]
+    fn test_build_worker_pod_no_container_spec() {
+        let mut spec = make_spec_no_mpi();
+        spec.container = None;
+        let result = build_worker_pod("my-job", "default", &spec, "node-0", 0);
+        assert!(matches!(result, Err(WrenError::ValidationError { .. })));
+    }
+
+    #[test]
+    fn test_build_worker_pod_empty_command() {
+        let mut spec = make_spec_no_mpi();
+        spec.container.as_mut().unwrap().command = vec![];
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.containers[0].command, None);
+    }
+
+    #[test]
+    fn test_build_worker_pod_with_command() {
+        let spec = make_spec_no_mpi(); // command = ["sleep", "infinity"]
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(
+            pod_spec.containers[0].command,
+            Some(vec!["sleep".to_string(), "infinity".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_build_worker_pod_restart_policy() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.restart_policy.as_deref(), Some("Never"));
+    }
+
+    #[test]
+    fn test_build_worker_pod_subdomain() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.subdomain.as_deref(), Some("my-job-workers"));
+    }
+
+    // --- build_launcher_pod tests ---
+
+    #[test]
+    fn test_build_launcher_pod_name_and_labels() {
+        let spec = make_spec_with_mpi();
+        let placement = make_placement(&["node-0", "node-1"]);
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        assert_eq!(pod.metadata.name.as_deref(), Some("my-job-launcher"));
+        let labels = pod.metadata.labels.unwrap();
+        assert_eq!(labels["wren.giar.dev/role"], "launcher");
+        assert_eq!(labels["wren.giar.dev/job-name"], "my-job");
+        assert!(!labels.contains_key("wren.giar.dev/rank"));
+    }
+
+    #[test]
+    fn test_build_launcher_pod_mpirun_command() {
+        let spec = make_spec_with_mpi();
+        let placement = make_placement(&["node-0", "node-1"]);
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let cmd = pod_spec.containers[0].command.as_ref().unwrap();
+        assert_eq!(cmd[0], "mpirun");
+        assert!(cmd.contains(&"-np".to_string()));
+        assert!(cmd.contains(&"--hostfile".to_string()));
+    }
+
+    #[test]
+    fn test_build_launcher_pod_env_vars() {
+        let spec = make_spec_with_mpi();
+        let placement = make_placement(&["node-0", "node-1", "node-2", "node-3"]);
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        let job_name_var = env.iter().find(|e| e.name == "WREN_JOB_NAME").unwrap();
+        assert_eq!(job_name_var.value.as_deref(), Some("my-job"));
+        let num_nodes_var = env.iter().find(|e| e.name == "WREN_NUM_NODES").unwrap();
+        assert_eq!(num_nodes_var.value.as_deref(), Some("4"));
+        let total_ranks_var = env.iter().find(|e| e.name == "WREN_TOTAL_RANKS").unwrap();
+        assert_eq!(total_ranks_var.value.as_deref(), Some("32")); // 4 nodes * 8 tasks_per_node
+    }
+
+    #[test]
+    fn test_build_launcher_pod_node_placement() {
+        let spec = make_spec_with_mpi();
+        let placement = make_placement(&["first-node", "second-node"]);
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert_eq!(pod_spec.node_name.as_deref(), Some("first-node"));
+    }
+
+    #[test]
+    fn test_build_launcher_pod_no_container_spec() {
+        let mut spec = make_spec_with_mpi();
+        spec.container = None;
+        let placement = make_placement(&["node-0"]);
+        let result = build_launcher_pod("my-job", "default", &spec, &placement);
+        assert!(matches!(result, Err(WrenError::ValidationError { .. })));
+    }
+
+    #[test]
+    fn test_build_launcher_pod_user_command_appended() {
+        let mut spec = make_spec_with_mpi();
+        spec.container.as_mut().unwrap().command = vec!["./my_app".to_string()];
+        spec.container.as_mut().unwrap().args = vec!["--input".to_string(), "data.h5".to_string()];
+        let placement = make_placement(&["node-0"]);
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let cmd = pod_spec.containers[0].command.as_ref().unwrap();
+        // mpirun args come first, then user command/args
+        assert_eq!(cmd[0], "mpirun");
+        assert!(cmd.contains(&"./my_app".to_string()));
+        assert!(cmd.contains(&"--input".to_string()));
+        assert!(cmd.contains(&"data.h5".to_string()));
+        // user command comes after mpirun flags
+        let mpirun_idx = cmd.iter().position(|s| s == "mpirun").unwrap();
+        let app_idx = cmd.iter().position(|s| s == "./my_app").unwrap();
+        assert!(app_idx > mpirun_idx);
+    }
+
+    // --- interpret_pod_status tests ---
+
+    #[test]
+    fn test_interpret_pod_status_empty_pods() {
+        assert_eq!(interpret_pod_status(&[]), BackendJobStatus::NotFound);
+    }
+
+    #[test]
+    fn test_interpret_pod_status_launcher_succeeded() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Running"),
+            make_pod("launcher", None, "Succeeded"),
+        ];
+        assert_eq!(interpret_pod_status(&pods), BackendJobStatus::Succeeded);
+    }
+
+    #[test]
+    fn test_interpret_pod_status_launcher_failed() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Running"),
+            make_pod("launcher", None, "Failed"),
+        ];
+        let status = interpret_pod_status(&pods);
+        assert!(matches!(status, BackendJobStatus::Failed { .. }));
+        if let BackendJobStatus::Failed { message } = status {
+            assert!(!message.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_interpret_pod_status_launcher_running_all_workers_ready() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Running"),
+            make_pod("worker", Some(1), "Running"),
+            make_pod("launcher", None, "Running"),
+        ];
+        assert_eq!(interpret_pod_status(&pods), BackendJobStatus::Running);
+    }
+
+    #[test]
+    fn test_interpret_pod_status_launcher_running_some_workers_pending() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Running"),
+            make_pod("worker", Some(1), "Pending"),
+            make_pod("launcher", None, "Running"),
+        ];
+        let status = interpret_pod_status(&pods);
+        assert_eq!(
+            status,
+            BackendJobStatus::Launching { ready: 1, total: 2 }
+        );
+    }
+
+    #[test]
+    fn test_interpret_pod_status_no_launcher_all_succeeded() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Succeeded"),
+            make_pod("worker", Some(1), "Succeeded"),
+        ];
+        assert_eq!(interpret_pod_status(&pods), BackendJobStatus::Succeeded);
+    }
+
+    #[test]
+    fn test_interpret_pod_status_no_launcher_some_failed() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Succeeded"),
+            make_pod("worker", Some(1), "Failed"),
+        ];
+        let status = interpret_pod_status(&pods);
+        assert!(matches!(status, BackendJobStatus::Failed { .. }));
+    }
+
+    #[test]
+    fn test_interpret_pod_status_no_launcher_some_running() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Running"),
+            make_pod("worker", Some(1), "Pending"),
+        ];
+        assert_eq!(interpret_pod_status(&pods), BackendJobStatus::Running);
+    }
+
+    #[test]
+    fn test_interpret_pod_status_no_launcher_all_pending() {
+        let pods = vec![
+            make_pod("worker", Some(0), "Pending"),
+            make_pod("worker", Some(1), "Pending"),
+        ];
+        assert_eq!(
+            interpret_pod_status(&pods),
+            BackendJobStatus::Launching { ready: 0, total: 2 }
+        );
     }
 }

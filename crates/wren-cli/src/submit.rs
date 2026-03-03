@@ -7,19 +7,30 @@ use std::fs;
 use tracing::info;
 use wren_core::WrenJob;
 
-/// Submit an WrenJob from a YAML file, with optional queue and nodes overrides.
-pub async fn run(file: &str, queue: Option<&str>, nodes: Option<u32>) -> Result<()> {
-    let yaml =
-        fs::read_to_string(file).with_context(|| format!("failed to read job file: {file}"))?;
-
-    let mut job: WrenJob = serde_yaml::from_str(&yaml).context("failed to parse WrenJob YAML")?;
-
+/// Parse a WrenJob from YAML and apply optional overrides.
+/// Extracted for testability — the async `run` function calls this then submits to K8s.
+pub(crate) fn parse_and_override_job(
+    yaml: &str,
+    queue: Option<&str>,
+    nodes: Option<u32>,
+) -> anyhow::Result<WrenJob> {
+    let mut job: WrenJob =
+        serde_yaml::from_str(yaml).context("failed to parse WrenJob YAML")?;
     if let Some(q) = queue {
         job.spec.queue = q.to_string();
     }
     if let Some(n) = nodes {
         job.spec.nodes = n;
     }
+    Ok(job)
+}
+
+/// Submit an WrenJob from a YAML file, with optional queue and nodes overrides.
+pub async fn run(file: &str, queue: Option<&str>, nodes: Option<u32>) -> Result<()> {
+    let yaml =
+        fs::read_to_string(file).with_context(|| format!("failed to read job file: {file}"))?;
+
+    let job = parse_and_override_job(&yaml, queue, nodes)?;
 
     let client = Client::try_default()
         .await
@@ -43,4 +54,67 @@ pub async fn run(file: &str, queue: Option<&str>, nodes: Option<u32>) -> Result<
     println!("job/{name} submitted to namespace {namespace}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_JOB_YAML: &str = r#"
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: test-job
+  namespace: test-ns
+spec:
+  nodes: 2
+  queue: default
+  container:
+    image: busybox
+"#;
+
+    #[test]
+    fn test_parse_valid_yaml() {
+        let job = parse_and_override_job(VALID_JOB_YAML, None, None).unwrap();
+        assert_eq!(job.spec.nodes, 2);
+        assert_eq!(job.spec.queue, "default");
+    }
+
+    #[test]
+    fn test_parse_with_queue_override() {
+        let job = parse_and_override_job(VALID_JOB_YAML, Some("gpu"), None).unwrap();
+        assert_eq!(job.spec.queue, "gpu");
+    }
+
+    #[test]
+    fn test_parse_with_nodes_override() {
+        let job = parse_and_override_job(VALID_JOB_YAML, None, Some(8)).unwrap();
+        assert_eq!(job.spec.nodes, 8);
+    }
+
+    #[test]
+    fn test_parse_with_both_overrides() {
+        let job = parse_and_override_job(VALID_JOB_YAML, Some("priority"), Some(16)).unwrap();
+        assert_eq!(job.spec.queue, "priority");
+        assert_eq!(job.spec.nodes, 16);
+    }
+
+    #[test]
+    fn test_parse_invalid_yaml() {
+        let result = parse_and_override_job("not: valid: yaml: [[[", None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_wrong_structure() {
+        let result = parse_and_override_job("foo: bar", None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_preserves_metadata() {
+        let job = parse_and_override_job(VALID_JOB_YAML, None, None).unwrap();
+        assert_eq!(job.metadata.name.as_deref(), Some("test-job"));
+        assert_eq!(job.metadata.namespace.as_deref(), Some("test-ns"));
+    }
 }
