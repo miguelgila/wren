@@ -50,7 +50,9 @@ impl NodeWatcher {
 
         let btree_labels = node.metadata.labels.clone().unwrap_or_default();
 
-        let switch_group = btree_labels.get("network.wren.giar.dev/switch-group").cloned();
+        let switch_group = btree_labels
+            .get("network.wren.giar.dev/switch-group")
+            .cloned();
         let rack = btree_labels.get("topology.kubernetes.io/zone").cloned();
 
         let labels: std::collections::HashMap<String, String> = btree_labels.into_iter().collect();

@@ -548,10 +548,7 @@ async fn test_multiple_jobs_queued() {
         assert!(
             matches!(
                 state,
-                JobState::Pending
-                    | JobState::Scheduling
-                    | JobState::Running
-                    | JobState::Succeeded
+                JobState::Pending | JobState::Scheduling | JobState::Running | JobState::Succeeded
             ),
             "unexpected state for {name}: {state}"
         );
@@ -915,7 +912,9 @@ async fn test_job_creates_worker_pods() {
                 "worker pod missing wren.giar.dev/rank label"
             );
             assert!(
-                labels.and_then(|l| l.get("wren.giar.dev/job-name")).is_some(),
+                labels
+                    .and_then(|l| l.get("wren.giar.dev/job-name"))
+                    .is_some(),
                 "worker pod missing wren.giar.dev/job-name label"
             );
         }
