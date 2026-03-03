@@ -354,4 +354,95 @@ mod tests {
             .find(|f| f.get_name() == "wren_topology_placement_score");
         assert!(topo.is_some());
     }
+
+    #[test]
+    fn test_metrics_default() {
+        let m = Metrics::default();
+        let families = m.registry.gather();
+        assert!(!families.is_empty());
+    }
+
+    #[test]
+    fn test_node_counts_update() {
+        let m = Metrics::new();
+        m.update_node_counts(10, 8);
+
+        let families = m.registry.gather();
+        let total = families.iter().find(|f| f.get_name() == "wren_nodes_total");
+        assert!(total.is_some());
+        let allocatable = families
+            .iter()
+            .find(|f| f.get_name() == "wren_nodes_allocatable");
+        assert!(allocatable.is_some());
+    }
+
+    #[test]
+    fn test_job_state_change_new_to_pending_to_running() {
+        let m = Metrics::new();
+        m.record_job_state_change("gpu", "", "Pending");
+        m.record_job_state_change("gpu", "Pending", "Running");
+        m.record_job_state_change("gpu", "Running", "Succeeded");
+
+        let families = m.registry.gather();
+        let active = families.iter().find(|f| f.get_name() == "wren_jobs_active");
+        assert!(active.is_some());
+        let total = families.iter().find(|f| f.get_name() == "wren_jobs_total");
+        assert!(total.is_some());
+    }
+
+    #[test]
+    fn test_multiple_queue_depths() {
+        let m = Metrics::new();
+        m.update_queue_depth("default", 5);
+        m.update_queue_depth("gpu", 3);
+        m.update_queue_depth("default", 4);
+
+        let families = m.registry.gather();
+        let depth = families.iter().find(|f| f.get_name() == "wren_queue_depth");
+        assert!(depth.is_some());
+    }
+
+    #[test]
+    fn test_cluster_utilization_boundary_values() {
+        let m = Metrics::new();
+        m.update_cluster_utilization(0.0, 0.0, 0.0);
+        m.update_cluster_utilization(1.0, 1.0, 1.0);
+
+        let families = m.registry.gather();
+        let gpu = families
+            .iter()
+            .find(|f| f.get_name() == "wren_cluster_gpu_utilization_ratio");
+        assert!(gpu.is_some());
+    }
+
+    #[test]
+    fn test_reservation_start_end_cycle() {
+        let m = Metrics::new();
+        m.record_reservation_start();
+        m.record_reservation_start();
+        m.record_reservation_end();
+        m.record_reservation_end();
+
+        let families = m.registry.gather();
+        let res = families
+            .iter()
+            .find(|f| f.get_name() == "wren_active_reservations");
+        assert!(res.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_health_handler() {
+        let response = health_handler().await;
+        assert_eq!(response, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_metrics_handler_returns_prometheus_text() {
+        let m = Metrics::new();
+        m.record_job_state_change("default", "", "Pending");
+        let state = axum::extract::State(m);
+        let response = metrics_handler(state).await.unwrap();
+        assert!(response.contains("wren_jobs_total"));
+        assert!(response.contains("wren_jobs_active"));
+    }
 }

@@ -348,4 +348,232 @@ mod tests {
         assert!(status.assigned_nodes.is_empty());
         assert_eq!(status.ready_workers, 0);
     }
+
+    #[test]
+    fn test_mpi_spec_defaults() {
+        let yaml = r#"
+            implementation: openmpi
+        "#;
+        let spec: MPISpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.implementation, "openmpi");
+        assert!(spec.ssh_auth); // default_true
+        assert!(spec.fabric_interface.is_none());
+    }
+
+    #[test]
+    fn test_mpi_spec_full() {
+        let yaml = r#"
+            implementation: cray-mpich
+            sshAuth: false
+            fabricInterface: hsn0
+        "#;
+        let spec: MPISpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.implementation, "cray-mpich");
+        assert!(!spec.ssh_auth);
+        assert_eq!(spec.fabric_interface.as_deref(), Some("hsn0"));
+    }
+
+    #[test]
+    fn test_topology_spec_serde() {
+        let yaml = r#"
+            preferSameSwitch: true
+            maxHops: 2
+            topologyKey: "topology.kubernetes.io/zone"
+        "#;
+        let spec: TopologySpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.prefer_same_switch);
+        assert_eq!(spec.max_hops, Some(2));
+        assert_eq!(
+            spec.topology_key.as_deref(),
+            Some("topology.kubernetes.io/zone")
+        );
+    }
+
+    #[test]
+    fn test_topology_spec_defaults() {
+        let yaml = "{}";
+        let spec: TopologySpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(!spec.prefer_same_switch);
+        assert!(spec.max_hops.is_none());
+        assert!(spec.topology_key.is_none());
+    }
+
+    #[test]
+    fn test_reaper_spec_serde() {
+        let yaml = r#"
+            script: |
+              #!/bin/bash
+              srun ./app
+            environment:
+              SCRATCH: /scratch
+            workingDir: /home/user
+        "#;
+        let spec: ReaperSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.script.contains("srun"));
+        assert_eq!(spec.environment["SCRATCH"], "/scratch");
+        assert_eq!(spec.working_dir.as_deref(), Some("/home/user"));
+    }
+
+    #[test]
+    fn test_dependency_type_serde() {
+        let json = r#""afterOk""#;
+        let dt: DependencyType = serde_json::from_str(json).unwrap();
+        assert_eq!(dt, DependencyType::AfterOk);
+
+        let json = r#""afterAny""#;
+        let dt: DependencyType = serde_json::from_str(json).unwrap();
+        assert_eq!(dt, DependencyType::AfterAny);
+
+        let json = r#""afterNotOk""#;
+        let dt: DependencyType = serde_json::from_str(json).unwrap();
+        assert_eq!(dt, DependencyType::AfterNotOk);
+    }
+
+    #[test]
+    fn test_job_dependency_serde() {
+        let yaml = r#"
+            type: afterOk
+            job: previous-sim
+        "#;
+        let dep: JobDependency = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(dep.dep_type, DependencyType::AfterOk);
+        assert_eq!(dep.job, "previous-sim");
+    }
+
+    #[test]
+    fn test_resource_requirements_serde() {
+        let yaml = r#"
+            limits:
+              nvidia.com/gpu: "4"
+              memory: "64Gi"
+            requests:
+              cpu: "4000m"
+        "#;
+        let rr: ResourceRequirements = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rr.limits["nvidia.com/gpu"], "4");
+        assert_eq!(rr.limits["memory"], "64Gi");
+        assert_eq!(rr.requests["cpu"], "4000m");
+    }
+
+    #[test]
+    fn test_volume_mount_serde() {
+        let yaml = r#"
+            name: data
+            mountPath: /mnt/data
+            readOnly: true
+        "#;
+        let vm: VolumeMount = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(vm.name, "data");
+        assert_eq!(vm.mount_path, "/mnt/data");
+        assert!(vm.read_only);
+    }
+
+    #[test]
+    fn test_env_var_serde() {
+        let json = r#"{"name": "FOO", "value": "bar"}"#;
+        let ev: EnvVar = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.name, "FOO");
+        assert_eq!(ev.value, "bar");
+    }
+
+    #[test]
+    fn test_backfill_config_serde() {
+        let yaml = r#"
+            enabled: true
+            lookAhead: "2h"
+        "#;
+        let bc: BackfillConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(bc.enabled);
+        assert_eq!(bc.look_ahead.as_deref(), Some("2h"));
+    }
+
+    #[test]
+    fn test_fair_share_config_serde() {
+        let yaml = r#"
+            enabled: true
+            decayHalfLife: "7d"
+        "#;
+        let fs: FairShareConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(fs.enabled);
+        assert_eq!(fs.decay_half_life.as_deref(), Some("7d"));
+    }
+
+    #[test]
+    fn test_wrenqueue_spec_full() {
+        let yaml = r#"
+            maxNodes: 64
+            maxWalltime: "24h"
+            maxJobsPerUser: 10
+            defaultPriority: 100
+            backfill:
+              enabled: true
+              lookAhead: "4h"
+            fairShare:
+              enabled: true
+              decayHalfLife: "14d"
+        "#;
+        let spec: WrenQueueSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.max_nodes, 64);
+        assert_eq!(spec.max_walltime.as_deref(), Some("24h"));
+        assert_eq!(spec.max_jobs_per_user, Some(10));
+        assert_eq!(spec.default_priority, 100);
+        assert!(spec.backfill.unwrap().enabled);
+        assert!(spec.fair_share.unwrap().enabled);
+    }
+
+    #[test]
+    fn test_wrenjob_status_serde_roundtrip() {
+        let status = WrenJobStatus {
+            state: JobState::Running,
+            message: Some("all workers ready".to_string()),
+            assigned_nodes: vec!["node-0".to_string(), "node-1".to_string()],
+            start_time: Some("2024-01-01T00:00:00Z".to_string()),
+            completion_time: None,
+            ready_workers: 2,
+            total_workers: 2,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let parsed: WrenJobStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.state, JobState::Running);
+        assert_eq!(parsed.ready_workers, 2);
+        assert_eq!(parsed.assigned_nodes.len(), 2);
+    }
+
+    #[test]
+    fn test_wrenjob_spec_with_container_and_mpi() {
+        let yaml = r#"
+            nodes: 4
+            tasksPerNode: 8
+            queue: gpu
+            priority: 200
+            walltime: "8h"
+            container:
+              image: "nvcr.io/nvidia/pytorch:24.01"
+              command: ["python", "train.py"]
+              hostNetwork: true
+              env:
+                - name: NCCL_DEBUG
+                  value: INFO
+            mpi:
+              implementation: openmpi
+              sshAuth: true
+              fabricInterface: hsn0
+            topology:
+              preferSameSwitch: true
+              maxHops: 2
+        "#;
+        let spec: WrenJobSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.nodes, 4);
+        assert_eq!(spec.tasks_per_node, 8);
+        let container = spec.container.unwrap();
+        assert_eq!(container.image, "nvcr.io/nvidia/pytorch:24.01");
+        assert!(container.host_network);
+        assert_eq!(container.env.len(), 1);
+        let mpi = spec.mpi.unwrap();
+        assert_eq!(mpi.implementation, "openmpi");
+        assert_eq!(mpi.fabric_interface.as_deref(), Some("hsn0"));
+        let topo = spec.topology.unwrap();
+        assert!(topo.prefer_same_switch);
+        assert_eq!(topo.max_hops, Some(2));
+    }
 }

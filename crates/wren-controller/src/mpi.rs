@@ -528,4 +528,69 @@ mod tests {
         assert!(args.contains(&"--network".to_string()));
         assert!(args.contains(&"hsn0".to_string()));
     }
+
+    #[test]
+    fn test_job_labels_launcher_no_rank() {
+        let labels = job_labels("my-sim", "launcher", None);
+        assert_eq!(labels["wren.giar.dev/job-name"], "my-sim");
+        assert_eq!(labels["wren.giar.dev/role"], "launcher");
+        assert!(!labels.contains_key("wren.giar.dev/rank"));
+        assert_eq!(labels["app.kubernetes.io/managed-by"], "wren");
+    }
+
+    #[test]
+    fn test_mpirun_args_cray_mpich() {
+        let spec = make_cray_spec(2, 4, None);
+        let args = mpirun_args(&spec, "/etc/wren/hostfile");
+        // cray-mpich falls through to default case (no special flags)
+        assert!(args.contains(&"mpirun".to_string()));
+        assert!(args.contains(&"8".to_string()));
+        assert!(!args.contains(&"--allow-run-as-root".to_string()));
+    }
+
+    #[test]
+    fn test_mpirun_args_no_mpi_spec() {
+        let mut spec = make_spec(2, 4);
+        spec.mpi = None;
+        let args = mpirun_args(&spec, "/etc/wren/hostfile");
+        // Defaults to openmpi when mpi spec is None
+        assert!(args.contains(&"--allow-run-as-root".to_string()));
+    }
+
+    #[test]
+    fn test_total_ranks_single_node() {
+        let spec = make_spec(1, 1);
+        assert_eq!(total_ranks(&spec), 1);
+    }
+
+    #[test]
+    fn test_generate_hostfile_single_node() {
+        let placement = make_placement(&["node-0"]);
+        let hostfile = generate_hostfile(&placement, 1);
+        assert_eq!(hostfile, "node-0 slots=1");
+    }
+
+    #[test]
+    fn test_bare_metal_env_vars_openmpi_no_fabric() {
+        let spec = make_spec(2, 4);
+        let nodes = make_nodes(&["n0", "n1"]);
+        let env = bare_metal_env_vars("job", &spec, &nodes, "/hf");
+        // openmpi without fabric should not set UCX_NET_DEVICES
+        assert!(!env.contains_key("UCX_NET_DEVICES"));
+        assert!(!env.contains_key("MPICH_OFI_STARTUP_CONNECT"));
+        assert!(!env.contains_key("I_MPI_FABRICS_LIST"));
+    }
+
+    #[test]
+    fn test_bare_metal_mpirun_args_unknown_impl() {
+        let mut spec = make_spec(2, 2);
+        spec.mpi = Some(MPISpec {
+            implementation: "unknown-mpi".to_string(),
+            ssh_auth: false,
+            fabric_interface: None,
+        });
+        let args = bare_metal_mpirun_args(&spec, "/hf");
+        // Falls through to default (openmpi-like)
+        assert_eq!(args[0], "mpirun");
+    }
 }

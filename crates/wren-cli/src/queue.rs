@@ -70,7 +70,7 @@ pub async fn run(queue: Option<&str>, namespace: Option<&str>) -> Result<()> {
 }
 
 /// Format a DateTime as a human-readable age string (e.g. "5m", "2h", "3d").
-fn format_age(ts: &chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn format_age(ts: &chrono::DateTime<chrono::Utc>) -> String {
     let now = chrono::Utc::now();
     let elapsed = now.signed_duration_since(*ts);
     let secs = elapsed.num_seconds().max(0) as u64;
@@ -83,5 +83,47 @@ fn format_age(ts: &chrono::DateTime<chrono::Utc>) -> String {
         format!("{}h", secs / 3600)
     } else {
         format!("{}d", secs / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn test_format_age_seconds() {
+        let ts = Utc::now() - Duration::seconds(30);
+        let age = format_age(&ts);
+        assert!(age.ends_with('s'), "expected seconds suffix, got: {age}");
+    }
+
+    #[test]
+    fn test_format_age_minutes() {
+        let ts = Utc::now() - Duration::minutes(5);
+        let age = format_age(&ts);
+        assert_eq!(age, "5m");
+    }
+
+    #[test]
+    fn test_format_age_hours() {
+        let ts = Utc::now() - Duration::hours(3);
+        let age = format_age(&ts);
+        assert_eq!(age, "3h");
+    }
+
+    #[test]
+    fn test_format_age_days() {
+        let ts = Utc::now() - Duration::days(7);
+        let age = format_age(&ts);
+        assert_eq!(age, "7d");
+    }
+
+    #[test]
+    fn test_format_age_future_timestamp() {
+        // Future timestamps should clamp to 0s
+        let ts = Utc::now() + Duration::hours(1);
+        let age = format_age(&ts);
+        assert_eq!(age, "0s");
     }
 }

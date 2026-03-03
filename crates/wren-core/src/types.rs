@@ -344,4 +344,208 @@ mod tests {
         assert_eq!(JobState::Running.to_string(), "Running");
         assert_eq!(JobState::Failed.to_string(), "Failed");
     }
+
+    #[test]
+    fn test_job_state_display_all_variants() {
+        assert_eq!(JobState::Scheduling.to_string(), "Scheduling");
+        assert_eq!(JobState::Succeeded.to_string(), "Succeeded");
+        assert_eq!(JobState::Cancelled.to_string(), "Cancelled");
+        assert_eq!(JobState::WalltimeExceeded.to_string(), "WalltimeExceeded");
+    }
+
+    #[test]
+    fn test_job_state_default() {
+        assert_eq!(JobState::default(), JobState::Pending);
+    }
+
+    #[test]
+    fn test_execution_backend_type_default() {
+        assert_eq!(
+            ExecutionBackendType::default(),
+            ExecutionBackendType::Container
+        );
+    }
+
+    #[test]
+    fn test_execution_backend_type_serde() {
+        let json = serde_json::to_string(&ExecutionBackendType::Reaper).unwrap();
+        assert_eq!(json, r#""reaper""#);
+        let parsed: ExecutionBackendType = serde_json::from_str(r#""container""#).unwrap();
+        assert_eq!(parsed, ExecutionBackendType::Container);
+    }
+
+    #[test]
+    fn test_cluster_state_default() {
+        let state = ClusterState::default();
+        assert!(state.nodes.is_empty());
+        assert!(state.allocations.is_empty());
+    }
+
+    #[test]
+    fn test_cluster_state_available_resources_unknown_node() {
+        let state = ClusterState::new();
+        assert!(state.available_resources("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_cluster_state_available_resources_no_allocation() {
+        let mut state = ClusterState::new();
+        state.nodes.push(NodeResources {
+            name: "node-0".to_string(),
+            allocatable_cpu_millis: 4000,
+            allocatable_memory_bytes: 8_000_000_000,
+            allocatable_gpus: 2,
+            labels: HashMap::new(),
+            switch_group: None,
+            rack: None,
+        });
+        let (cpu, mem, gpu) = state.available_resources("node-0").unwrap();
+        assert_eq!(cpu, 4000);
+        assert_eq!(mem, 8_000_000_000);
+        assert_eq!(gpu, 2);
+    }
+
+    #[test]
+    fn test_cluster_state_multiple_allocations() {
+        let mut state = ClusterState::new();
+        state.nodes.push(NodeResources {
+            name: "n0".to_string(),
+            allocatable_cpu_millis: 8000,
+            allocatable_memory_bytes: 16_000_000_000,
+            allocatable_gpus: 4,
+            labels: HashMap::new(),
+            switch_group: None,
+            rack: None,
+        });
+        state.allocate("n0", 1000, 2_000_000_000, 1, "job-1");
+        state.allocate("n0", 2000, 4_000_000_000, 1, "job-2");
+
+        let (cpu, mem, gpu) = state.available_resources("n0").unwrap();
+        assert_eq!(cpu, 5000);
+        assert_eq!(mem, 10_000_000_000);
+        assert_eq!(gpu, 2);
+
+        let alloc = &state.allocations["n0"];
+        assert_eq!(alloc.jobs, vec!["job-1", "job-2"]);
+    }
+
+    #[test]
+    fn test_cluster_state_deallocate_nonexistent_node() {
+        let mut state = ClusterState::new();
+        // Should not panic
+        state.deallocate("nonexistent", 1000, 1000, 1, "job-1");
+    }
+
+    #[test]
+    fn test_cluster_state_deallocate_saturating() {
+        let mut state = ClusterState::new();
+        state.nodes.push(NodeResources {
+            name: "n0".to_string(),
+            allocatable_cpu_millis: 8000,
+            allocatable_memory_bytes: 16_000_000_000,
+            allocatable_gpus: 4,
+            labels: HashMap::new(),
+            switch_group: None,
+            rack: None,
+        });
+        state.allocate("n0", 1000, 1_000_000_000, 1, "job-1");
+        // Deallocate more than was allocated — should saturate to 0
+        state.deallocate("n0", 5000, 5_000_000_000, 5, "job-1");
+
+        let alloc = &state.allocations["n0"];
+        assert_eq!(alloc.used_cpu_millis, 0);
+        assert_eq!(alloc.used_memory_bytes, 0);
+        assert_eq!(alloc.used_gpus, 0);
+    }
+
+    #[test]
+    fn test_walltime_parse_seconds_suffix() {
+        let wt = WalltimeDuration::parse("30s").unwrap();
+        assert_eq!(wt.seconds, 30);
+    }
+
+    #[test]
+    fn test_walltime_parse_complex() {
+        let wt = WalltimeDuration::parse("1d2h30m").unwrap();
+        assert_eq!(wt.seconds, 86400 + 7200 + 1800);
+    }
+
+    #[test]
+    fn test_walltime_parse_zero_duration() {
+        assert!(WalltimeDuration::parse("0h").is_err());
+    }
+
+    #[test]
+    fn test_walltime_parse_trailing_number() {
+        assert!(WalltimeDuration::parse("4h30").is_err());
+    }
+
+    #[test]
+    fn test_walltime_as_duration() {
+        let wt = WalltimeDuration { seconds: 3600 };
+        assert_eq!(wt.as_duration(), std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn test_walltime_display_seconds() {
+        assert_eq!(WalltimeDuration { seconds: 5 }.to_string(), "5s");
+    }
+
+    #[test]
+    fn test_walltime_display_days() {
+        assert_eq!(WalltimeDuration { seconds: 90061 }.to_string(), "1d1h1m");
+    }
+
+    #[test]
+    fn test_node_resources_with_topology() {
+        let node = NodeResources {
+            name: "gpu-node-0".to_string(),
+            allocatable_cpu_millis: 64000,
+            allocatable_memory_bytes: 256_000_000_000,
+            allocatable_gpus: 8,
+            labels: HashMap::from([("zone".to_string(), "us-east-1a".to_string())]),
+            switch_group: Some("sw-rack-01".to_string()),
+            rack: Some("rack-01".to_string()),
+        };
+        assert_eq!(node.switch_group.as_deref(), Some("sw-rack-01"));
+        assert_eq!(node.rack.as_deref(), Some("rack-01"));
+        assert_eq!(node.labels["zone"], "us-east-1a");
+    }
+
+    #[test]
+    fn test_node_allocation_default() {
+        let alloc = NodeAllocation::default();
+        assert_eq!(alloc.used_cpu_millis, 0);
+        assert_eq!(alloc.used_memory_bytes, 0);
+        assert_eq!(alloc.used_gpus, 0);
+        assert!(alloc.jobs.is_empty());
+    }
+
+    #[test]
+    fn test_placement_clone() {
+        let p = Placement {
+            nodes: vec!["n0".to_string(), "n1".to_string()],
+            score: 0.95,
+        };
+        let c = p.clone();
+        assert_eq!(c.nodes, vec!["n0", "n1"]);
+        assert!((c.score - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_job_state_serde_roundtrip() {
+        for state in [
+            JobState::Pending,
+            JobState::Scheduling,
+            JobState::Running,
+            JobState::Succeeded,
+            JobState::Failed,
+            JobState::Cancelled,
+            JobState::WalltimeExceeded,
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            let parsed: JobState = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, state);
+        }
+    }
 }
