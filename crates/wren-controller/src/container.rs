@@ -365,7 +365,7 @@ impl ExecutionBackend for ContainerBackend {
 
     async fn status(&self, job_name: &str, namespace: &str) -> Result<BackendJobStatus, WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let lp = ListParams::default().labels(&format!("wren.scops-hpc.com/job-name={}", job_name));
+        let lp = ListParams::default().labels(&format!("wren.giar.dev/job-name={}", job_name));
         let pods = pod_api.list(&lp).await.map_err(WrenError::KubeError)?;
 
         if pods.items.is_empty() {
@@ -379,7 +379,7 @@ impl ExecutionBackend for ContainerBackend {
                 p.metadata
                     .labels
                     .as_ref()
-                    .and_then(|l| l.get("wren.scops-hpc.com/role"))
+                    .and_then(|l| l.get("wren.giar.dev/role"))
                     == Some(&"worker".to_string())
             })
             .collect();
@@ -388,7 +388,7 @@ impl ExecutionBackend for ContainerBackend {
             p.metadata
                 .labels
                 .as_ref()
-                .and_then(|l| l.get("wren.scops-hpc.com/role"))
+                .and_then(|l| l.get("wren.giar.dev/role"))
                 == Some(&"launcher".to_string())
         });
 
@@ -458,7 +458,7 @@ impl ExecutionBackend for ContainerBackend {
 
     async fn terminate(&self, job_name: &str, namespace: &str) -> Result<(), WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let lp = ListParams::default().labels(&format!("wren.scops-hpc.com/job-name={}", job_name));
+        let lp = ListParams::default().labels(&format!("wren.giar.dev/job-name={}", job_name));
         let pods = pod_api.list(&lp).await.map_err(WrenError::KubeError)?;
 
         for pod in &pods.items {

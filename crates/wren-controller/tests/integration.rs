@@ -217,8 +217,8 @@ async fn cleanup_queue(client: Client, name: &str, namespace: &str) -> anyhow::R
 /// Verify that both `WrenJob` and `WrenQueue` CRDs are registered with the API server.
 async fn ensure_crds_installed(client: Client) -> bool {
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let wrenjob_exists = crd_api.get("wrenjobs.wren.scops-hpc.com").await.is_ok();
-    let queue_exists = crd_api.get("wrenqueues.wren.scops-hpc.com").await.is_ok();
+    let wrenjob_exists = crd_api.get("wrenjobs.wren.giar.dev").await.is_ok();
+    let queue_exists = crd_api.get("wrenqueues.wren.giar.dev").await.is_ok();
     wrenjob_exists && queue_exists
 }
 
@@ -235,7 +235,7 @@ async fn test_wrenjob_crd_registered() {
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("wrenjobs.wren.scops-hpc.com").await;
+    let result = crd_api.get("wrenjobs.wren.giar.dev").await;
     assert!(
         result.is_ok(),
         "WrenJob CRD not found — apply manifests/crds/ first"
@@ -251,7 +251,7 @@ async fn test_wrenqueue_crd_registered() {
     }
     let client = Client::try_default().await.expect("kube client");
     let crd_api: Api<CustomResourceDefinition> = Api::all(client);
-    let result = crd_api.get("wrenqueues.wren.scops-hpc.com").await;
+    let result = crd_api.get("wrenqueues.wren.giar.dev").await;
     assert!(
         result.is_ok(),
         "WrenQueue CRD not found — apply manifests/crds/ first"
@@ -308,7 +308,7 @@ async fn test_wrenjob_default_values() {
     // Post raw JSON with only the mandatory field.
     let api: Api<WrenJob> = Api::namespaced(client.clone(), namespace);
     let raw: WrenJob = serde_json::from_value(json!({
-        "apiVersion": "wren.scops-hpc.com/v1alpha1",
+        "apiVersion": "wren.giar.dev/v1alpha1",
         "kind": "WrenJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 1 }
@@ -438,7 +438,7 @@ async fn test_invalid_job_fails() {
     // The API server may reject it (via webhook validation) or the controller marks it Failed.
     let api: Api<WrenJob> = Api::namespaced(client.clone(), namespace);
     let raw: WrenJob = serde_json::from_value(json!({
-        "apiVersion": "wren.scops-hpc.com/v1alpha1",
+        "apiVersion": "wren.giar.dev/v1alpha1",
         "kind": "WrenJob",
         "metadata": { "name": name, "namespace": namespace },
         "spec": { "nodes": 0 }
@@ -888,8 +888,8 @@ async fn test_job_creates_worker_pods() {
     )
     .await;
 
-    // Verify worker pods with wren.scops-hpc.com/job-name and wren.scops-hpc.com/role=worker labels.
-    let label_selector = format!("wren.scops-hpc.com/job-name={name},wren.scops-hpc.com/role=worker");
+    // Verify worker pods with wren.giar.dev/job-name and wren.giar.dev/role=worker labels.
+    let label_selector = format!("wren.giar.dev/job-name={name},wren.giar.dev/role=worker");
     let found = wait_for_pods(
         client.clone(),
         namespace,
@@ -911,12 +911,12 @@ async fn test_job_creates_worker_pods() {
         for pod in &pods.items {
             let labels = pod.metadata.labels.as_ref();
             assert!(
-                labels.and_then(|l| l.get("wren.scops-hpc.com/rank")).is_some(),
-                "worker pod missing wren.scops-hpc.com/rank label"
+                labels.and_then(|l| l.get("wren.giar.dev/rank")).is_some(),
+                "worker pod missing wren.giar.dev/rank label"
             );
             assert!(
-                labels.and_then(|l| l.get("wren.scops-hpc.com/job-name")).is_some(),
-                "worker pod missing wren.scops-hpc.com/job-name label"
+                labels.and_then(|l| l.get("wren.giar.dev/job-name")).is_some(),
+                "worker pod missing wren.giar.dev/job-name label"
             );
         }
     }
@@ -957,7 +957,7 @@ async fn test_job_creates_launcher_pod() {
     )
     .await;
 
-    let label_selector = format!("wren.scops-hpc.com/job-name={name},wren.scops-hpc.com/role=launcher");
+    let label_selector = format!("wren.giar.dev/job-name={name},wren.giar.dev/role=launcher");
     let found = wait_for_pods(
         client.clone(),
         namespace,
@@ -980,7 +980,7 @@ async fn test_job_creates_launcher_pod() {
                     .metadata
                     .labels
                     .as_ref()
-                    .and_then(|l| l.get("wren.scops-hpc.com/role"))
+                    .and_then(|l| l.get("wren.giar.dev/role"))
                     .map(String::as_str);
                 assert_eq!(
                     role,
@@ -1572,13 +1572,13 @@ async fn test_nodes_have_topology_labels() {
     for node in &nodes.items {
         let labels = node.metadata.labels.as_ref();
         if labels
-            .and_then(|l| l.get("topology.wren.scops-hpc.com/switch"))
+            .and_then(|l| l.get("topology.wren.giar.dev/switch"))
             .is_some()
         {
             switch_count += 1;
         }
         if labels
-            .and_then(|l| l.get("topology.wren.scops-hpc.com/rack"))
+            .and_then(|l| l.get("topology.wren.giar.dev/rack"))
             .is_some()
         {
             rack_count += 1;
@@ -1586,8 +1586,8 @@ async fn test_nodes_have_topology_labels() {
     }
 
     eprintln!(
-        "nodes with topology.wren.scops-hpc.com/switch: {switch_count}/{}, \
-         topology.wren.scops-hpc.com/rack: {rack_count}/{}",
+        "nodes with topology.wren.giar.dev/switch: {switch_count}/{}, \
+         topology.wren.giar.dev/rack: {rack_count}/{}",
         nodes.items.len(),
         nodes.items.len()
     );
@@ -1597,14 +1597,14 @@ async fn test_nodes_have_topology_labels() {
     // We log rather than assert so the test doesn't fail on vanilla clusters.
     if switch_count == 0 {
         eprintln!(
-            "NOTE: no topology.wren.scops-hpc.com/switch labels found — \
-             apply them with: kubectl label nodes <node> topology.wren.scops-hpc.com/switch=sw0"
+            "NOTE: no topology.wren.giar.dev/switch labels found — \
+             apply them with: kubectl label nodes <node> topology.wren.giar.dev/switch=sw0"
         );
     }
     if rack_count == 0 {
         eprintln!(
-            "NOTE: no topology.wren.scops-hpc.com/rack labels found — \
-             apply them with: kubectl label nodes <node> topology.wren.scops-hpc.com/rack=rack0"
+            "NOTE: no topology.wren.giar.dev/rack labels found — \
+             apply them with: kubectl label nodes <node> topology.wren.giar.dev/rack=rack0"
         );
     }
 }
@@ -1701,7 +1701,7 @@ async fn test_job_cleanup_removes_pods() {
     )
     .await;
 
-    let label_selector = format!("wren.scops-hpc.com/job-name={name}");
+    let label_selector = format!("wren.giar.dev/job-name={name}");
     let pods_before = count_pods(client.clone(), namespace, &label_selector).await;
     eprintln!("pods before deletion: {pods_before}");
 

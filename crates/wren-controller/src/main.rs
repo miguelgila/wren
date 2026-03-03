@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
                 pod.metadata
                     .labels
                     .as_ref()
-                    .and_then(|l| l.get("wren.scops-hpc.com/job-name"))
+                    .and_then(|l| l.get("wren.giar.dev/job-name"))
                     .map(|name| {
                         kube::runtime::reflector::ObjectRef::<WrenJob>::new(name)
                             .within(pod.metadata.namespace.as_deref().unwrap_or("default"))

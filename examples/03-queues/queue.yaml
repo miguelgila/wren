@@ -1,5 +1,5 @@
 # Define a queue with resource limits and policies.
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenQueue
 metadata:
   name: batch

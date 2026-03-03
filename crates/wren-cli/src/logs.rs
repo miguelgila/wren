@@ -15,8 +15,8 @@ pub async fn run(job: &str, rank: Option<u32>, follow: bool, namespace: &str) ->
     let pods: Api<Pod> = Api::namespaced(client, namespace);
 
     let label_selector = match rank {
-        Some(r) => format!("wren.scops-hpc.com/job-name={job},wren.scops-hpc.com/rank={r}"),
-        None => format!("wren.scops-hpc.com/job-name={job}"),
+        Some(r) => format!("wren.giar.dev/job-name={job},wren.giar.dev/rank={r}"),
+        None => format!("wren.giar.dev/job-name={job}"),
     };
 
     let lp = ListParams::default().labels(&label_selector);

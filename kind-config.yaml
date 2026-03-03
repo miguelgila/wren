@@ -13,21 +13,21 @@ nodes:
   - role: control-plane
   - role: worker
     labels:
-      topology.wren.scops-hpc.com/switch: switch-0
-      topology.wren.scops-hpc.com/rack: rack-0
+      topology.wren.giar.dev/switch: switch-0
+      topology.wren.giar.dev/rack: rack-0
       topology.kubernetes.io/zone: zone-a
   - role: worker
     labels:
-      topology.wren.scops-hpc.com/switch: switch-0
-      topology.wren.scops-hpc.com/rack: rack-0
+      topology.wren.giar.dev/switch: switch-0
+      topology.wren.giar.dev/rack: rack-0
       topology.kubernetes.io/zone: zone-a
   - role: worker
     labels:
-      topology.wren.scops-hpc.com/switch: switch-1
-      topology.wren.scops-hpc.com/rack: rack-1
+      topology.wren.giar.dev/switch: switch-1
+      topology.wren.giar.dev/rack: rack-1
       topology.kubernetes.io/zone: zone-b
   - role: worker
     labels:
-      topology.wren.scops-hpc.com/switch: switch-1
-      topology.wren.scops-hpc.com/rack: rack-1
+      topology.wren.giar.dev/switch: switch-1
+      topology.wren.giar.dev/rack: rack-1
       topology.kubernetes.io/zone: zone-b

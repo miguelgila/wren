@@ -1,5 +1,5 @@
 # Low-priority background job.
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: low-priority-job

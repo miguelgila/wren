@@ -44,7 +44,7 @@ export KUBECONFIG="${LOG_DIR}/kubeconfig"
 export KUBECONFIG_FILE="${KUBECONFIG}"
 
 # Pod label key used by the controller to associate pods with an WrenJob.
-WREN_JOB_LABEL="wren.scops-hpc.com/job-name"
+WREN_JOB_LABEL="wren.giar.dev/job-name"
 
 # ---------------------------------------------------------------------------
 # Flags (set via CLI arguments, matching Reaper's interface)
@@ -326,8 +326,8 @@ setup_cluster() {
     kubectl cluster-info --context "kind-${CLUSTER_NAME}"
     log "Nodes and topology labels:"
     kubectl get nodes \
-        -L topology.wren.scops-hpc.com/switch \
-        -L topology.wren.scops-hpc.com/rack \
+        -L topology.wren.giar.dev/switch \
+        -L topology.wren.giar.dev/rack \
         -L topology.kubernetes.io/zone
     success "Cluster is reachable"
 }
@@ -420,10 +420,10 @@ install_crds() {
     # Wait for CRDs to become established before proceeding
     log "Waiting for CRDs to be established ..."
     kubectl wait --for=condition=Established \
-        crd/wrenjobs.wren.scops-hpc.com \
+        crd/wrenjobs.wren.giar.dev \
         --timeout=30s
     kubectl wait --for=condition=Established \
-        crd/wrenqueues.wren.scops-hpc.com \
+        crd/wrenqueues.wren.giar.dev \
         --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
 
     success "CRDs installed (${crd_count} files)"
@@ -585,7 +585,7 @@ delete_job() {
     # Delete associated pods first (they may not have ownerReferences)
     kubectl delete pods \
         -n "${TEST_NAMESPACE}" \
-        -l "wren.scops-hpc.com/job-name=${job_name}" \
+        -l "wren.giar.dev/job-name=${job_name}" \
         --ignore-not-found \
         --timeout=30s 2>/dev/null || true
     # Then delete the WrenJob
@@ -602,7 +602,7 @@ _smoke_test_multinode_job() {
     local job_name="smoke-multinode"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -646,8 +646,8 @@ _smoke_test_topology_labels() {
 
     # Each worker node must have all three topology keys
     local expected_keys=(
-        "topology.wren.scops-hpc.com/switch"
-        "topology.wren.scops-hpc.com/rack"
+        "topology.wren.giar.dev/switch"
+        "topology.wren.giar.dev/rack"
         "topology.kubernetes.io/zone"
     )
 
@@ -686,10 +686,10 @@ _smoke_test_topology_labels() {
     # Verify the expected topology groups are present
     local switch0_count switch1_count
     switch0_count=$(kubectl get nodes \
-        -l "topology.wren.scops-hpc.com/switch=switch-0" \
+        -l "topology.wren.giar.dev/switch=switch-0" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
     switch1_count=$(kubectl get nodes \
-        -l "topology.wren.scops-hpc.com/switch=switch-1" \
+        -l "topology.wren.giar.dev/switch=switch-1" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [[ "$switch0_count" -ne 2 ]]; then
@@ -720,7 +720,7 @@ _smoke_test_queue_creation() {
     local queue_name="smoke-queue"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenQueue
 metadata:
   name: ${queue_name}
@@ -773,7 +773,7 @@ _smoke_test_invalid_job() {
     local job_name="smoke-invalid"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -838,7 +838,7 @@ _smoke_test_walltime_job() {
     local job_name="smoke-walltime"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -918,7 +918,7 @@ _smoke_test_concurrent_jobs() {
     log "Submitting 3 WrenJobs concurrently ..."
     for job_name in "${job_names[@]}"; do
         cat <<EOF | kubectl apply -f - &
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -971,13 +971,13 @@ smoke_test_concurrent_jobs() {
 
 # ---------------------------------------------------------------------------
 # Smoke test 7: Pod label selector — submit a job, wait for pods, verify
-# the pods carry the correct wren.scops-hpc.com/job-name label.
+# the pods carry the correct wren.giar.dev/job-name label.
 # ---------------------------------------------------------------------------
 _smoke_test_pod_labels() {
     local job_name="smoke-pod-labels"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1034,7 +1034,7 @@ EOF
 }
 
 smoke_test_pod_labels() {
-    run_test "pod label selector (wren.scops-hpc.com/job-name)" _smoke_test_pod_labels
+    run_test "pod label selector (wren.giar.dev/job-name)" _smoke_test_pod_labels
 }
 
 # ---------------------------------------------------------------------------
@@ -1045,7 +1045,7 @@ _smoke_test_headless_service() {
     local svc_name="${job_name}-workers"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1114,7 +1114,7 @@ _smoke_test_deletion_cleanup() {
     local job_name="smoke-cleanup"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1187,7 +1187,7 @@ _smoke_test_pod_preservation() {
     local job_name="smoke-pod-preserve"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1249,7 +1249,7 @@ _smoke_test_job_logs() {
     local expected_output="wren-logs-test-output"
     local manifest
     manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${job_name}
@@ -1311,7 +1311,7 @@ EOF
     local multi_job="smoke-logs-multi"
     local multi_manifest
     multi_manifest="$(cat <<EOF
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: ${multi_job}

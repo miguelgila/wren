@@ -99,8 +99,8 @@ kubectl apply -f "$ROOT_DIR/manifests/crds/"
 ok "CRDs installed"
 
 # Verify
-kubectl get crd wrenjobs.wren.scops-hpc.com &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
-kubectl get crd wrenqueues.wren.scops-hpc.com &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
+kubectl get crd wrenjobs.wren.giar.dev &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
+kubectl get crd wrenqueues.wren.giar.dev &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
 
 # ---------------------------------------------------------------------------
 # Step 3: Build and load controller image
@@ -157,7 +157,7 @@ sleep 2
 info "Example 2: Multi-node job (2 workers, gang scheduled)"
 kubectl apply -f "$SCRIPT_DIR/02-multi-node/job.yaml"
 ok "Created: multi-node-demo"
-echo "  Check pods:    kubectl get pods -l wren.scops-hpc.com/job-name=multi-node-demo"
+echo "  Check pods:    kubectl get pods -l wren.giar.dev/job-name=multi-node-demo"
 echo "  Check service: kubectl get svc multi-node-demo-workers"
 echo ""
 
@@ -203,7 +203,7 @@ echo ""
 echo "Useful commands:"
 echo "  kubectl get wrenjobs                         # List all jobs"
 echo "  kubectl get wrenjob <name> -o yaml           # Job details"
-echo "  kubectl get pods -l wren.scops-hpc.com/job-name=<name> # Job pods"
+echo "  kubectl get pods -l wren.giar.dev/job-name=<name> # Job pods"
 echo "  kubectl get wrenqueues                      # List queues"
 echo "  kubectl get nodes --show-labels             # Node topology"
 echo ""
