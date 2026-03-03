@@ -296,6 +296,94 @@ impl ContainerBackend {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wren_core::{ContainerSpec, ExecutionBackendType, MPISpec};
+
+    fn make_spec_no_mpi() -> wren_core::WrenJobSpec {
+        wren_core::WrenJobSpec {
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: None,
+            nodes: 2,
+            tasks_per_node: 1,
+            backend: ExecutionBackendType::Container,
+            container: Some(ContainerSpec {
+                image: "busybox".to_string(),
+                command: vec!["sleep".to_string(), "infinity".to_string()],
+                args: vec![],
+                resources: None,
+                host_network: false,
+                volume_mounts: vec![],
+                env: vec![],
+            }),
+            reaper: None,
+            mpi: None,
+            topology: None,
+            dependencies: vec![],
+        }
+    }
+
+    fn make_spec_with_mpi() -> wren_core::WrenJobSpec {
+        wren_core::WrenJobSpec {
+            queue: "default".to_string(),
+            priority: 50,
+            walltime: None,
+            nodes: 4,
+            tasks_per_node: 8,
+            backend: ExecutionBackendType::Container,
+            container: Some(ContainerSpec {
+                image: "openmpi:latest".to_string(),
+                command: vec![],
+                args: vec![],
+                resources: None,
+                host_network: true,
+                volume_mounts: vec![],
+                env: vec![],
+            }),
+            reaper: None,
+            mpi: Some(MPISpec {
+                implementation: "openmpi".to_string(),
+                ssh_auth: true,
+                fabric_interface: None,
+            }),
+            topology: None,
+            dependencies: vec![],
+        }
+    }
+
+    #[test]
+    fn test_needs_mpi_launcher_without_mpi_spec_returns_false() {
+        let spec = make_spec_no_mpi();
+        assert!(!needs_mpi_launcher(&spec));
+    }
+
+    #[test]
+    fn test_needs_mpi_launcher_with_mpi_spec_returns_true() {
+        let spec = make_spec_with_mpi();
+        assert!(needs_mpi_launcher(&spec));
+    }
+
+    #[test]
+    fn test_needs_mpi_launcher_mpi_none_is_false() {
+        let mut spec = make_spec_with_mpi();
+        spec.mpi = None;
+        assert!(!needs_mpi_launcher(&spec));
+    }
+
+    #[test]
+    fn test_needs_mpi_launcher_cray_mpich_is_true() {
+        let mut spec = make_spec_with_mpi();
+        spec.mpi = Some(MPISpec {
+            implementation: "cray-mpich".to_string(),
+            ssh_auth: false,
+            fabric_interface: Some("hsn0".to_string()),
+        });
+        assert!(needs_mpi_launcher(&spec));
+    }
+}
+
 #[async_trait]
 impl ExecutionBackend for ContainerBackend {
     async fn launch(

@@ -242,4 +242,268 @@ mod tests {
 
         assert!(NodeWatcher::parse_node(&node).is_none());
     }
+
+    #[test]
+    fn test_parse_node_skips_noschedule_taint() {
+        use k8s_openapi::api::core::v1::{NodeSpec, NodeStatus, Taint};
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("8".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("32Gi".to_string()));
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("tainted-node".to_string()),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                unschedulable: Some(false),
+                taints: Some(vec![Taint {
+                    key: "node-role.kubernetes.io/control-plane".to_string(),
+                    effect: "NoSchedule".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+        };
+
+        assert!(NodeWatcher::parse_node(&node).is_none());
+    }
+
+    #[test]
+    fn test_parse_node_allows_noexecute_taint() {
+        use k8s_openapi::api::core::v1::{NodeSpec, NodeStatus, Taint};
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("4".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("8Gi".to_string()));
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("node-noexecute".to_string()),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                unschedulable: Some(false),
+                taints: Some(vec![Taint {
+                    key: "dedicated".to_string(),
+                    effect: "NoExecute".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+        };
+
+        // NoExecute is not NoSchedule, so the node should not be filtered out.
+        let nr = NodeWatcher::parse_node(&node);
+        assert!(nr.is_some(), "NoExecute tainted node should not be skipped");
+        assert_eq!(nr.unwrap().name, "node-noexecute");
+    }
+
+    #[test]
+    fn test_parse_node_no_name_returns_none() {
+        use k8s_openapi::api::core::v1::NodeStatus;
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("4".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("8Gi".to_string()));
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: None, // no name
+                ..Default::default()
+            },
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(NodeWatcher::parse_node(&node).is_none());
+    }
+
+    #[test]
+    fn test_parse_node_no_status_returns_none() {
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("no-status-node".to_string()),
+                ..Default::default()
+            },
+            status: None,
+            ..Default::default()
+        };
+
+        assert!(NodeWatcher::parse_node(&node).is_none());
+    }
+
+    #[test]
+    fn test_parse_node_no_allocatable_returns_none() {
+        use k8s_openapi::api::core::v1::NodeStatus;
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("no-alloc-node".to_string()),
+                ..Default::default()
+            },
+            status: Some(NodeStatus {
+                allocatable: None, // no allocatable
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(NodeWatcher::parse_node(&node).is_none());
+    }
+
+    #[test]
+    fn test_parse_node_no_gpu_defaults_to_zero() {
+        use k8s_openapi::api::core::v1::{NodeSpec, NodeStatus};
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("4".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("8Gi".to_string()));
+        // No nvidia.com/gpu entry
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("cpu-only-node".to_string()),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                unschedulable: Some(false),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+        };
+
+        let nr = NodeWatcher::parse_node(&node).unwrap();
+        assert_eq!(nr.name, "cpu-only-node");
+        assert_eq!(nr.allocatable_gpus, 0);
+    }
+
+    #[test]
+    fn test_parse_node_rack_from_zone_label() {
+        use k8s_openapi::api::core::v1::{NodeSpec, NodeStatus};
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("8".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("16Gi".to_string()));
+
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "topology.kubernetes.io/zone".to_string(),
+            "us-east-1a".to_string(),
+        );
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("zone-node".to_string()),
+                labels: Some(labels),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                unschedulable: Some(false),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+        };
+
+        let nr = NodeWatcher::parse_node(&node).unwrap();
+        assert_eq!(nr.rack.as_deref(), Some("us-east-1a"));
+        assert!(nr.switch_group.is_none());
+    }
+
+    #[test]
+    fn test_parse_cpu_zero_millis() {
+        assert_eq!(parse_cpu(&Quantity("0m".to_string())), 0);
+        assert_eq!(parse_cpu(&Quantity("0".to_string())), 0);
+    }
+
+    #[test]
+    fn test_parse_memory_ki() {
+        // 1 Ki = 1024 bytes
+        assert_eq!(parse_memory(&Quantity("1Ki".to_string())), 1024);
+    }
+
+    #[test]
+    fn test_parse_memory_ti() {
+        // 1 Ti = 1024^4 bytes
+        assert_eq!(
+            parse_memory(&Quantity("1Ti".to_string())),
+            1024u64 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn test_parse_memory_t_decimal() {
+        // 1T = 1_000_000_000_000 bytes
+        assert_eq!(
+            parse_memory(&Quantity("1T".to_string())),
+            1_000_000_000_000u64
+        );
+    }
+
+    #[test]
+    fn test_parse_memory_invalid_returns_zero() {
+        assert_eq!(parse_memory(&Quantity("notanumber".to_string())), 0);
+    }
+
+    #[test]
+    fn test_parse_cpu_invalid_returns_zero() {
+        assert_eq!(parse_cpu(&Quantity("notanumber".to_string())), 0);
+        assert_eq!(parse_cpu(&Quantity("xm".to_string())), 0);
+    }
+
+    #[test]
+    fn test_parse_integer_invalid_returns_zero() {
+        assert_eq!(parse_integer(&Quantity("notanumber".to_string())), 0);
+    }
+
+    #[test]
+    fn test_parse_node_schedulable_false_explicitly() {
+        // unschedulable: Some(false) should NOT be skipped
+        use k8s_openapi::api::core::v1::{NodeSpec, NodeStatus};
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("4".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("8Gi".to_string()));
+
+        let node = Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some("schedulable-node".to_string()),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                unschedulable: Some(false),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+        };
+
+        assert!(NodeWatcher::parse_node(&node).is_some());
+    }
 }

@@ -334,6 +334,141 @@ mod tests {
     }
 
     #[test]
+    fn test_score_empty_node_names() {
+        let nodes: Vec<NodeResources> = vec![node("n0", Some("sw-1"), Some("rack-A"))];
+        let scorer = TopologyScorer::new(&nodes);
+        let score = scorer.score(&names(&[]), None);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_score_single_node() {
+        let nodes = vec![node("n0", Some("sw-1"), Some("rack-A"))];
+        let scorer = TopologyScorer::new(&nodes);
+        let score = scorer.score(&names(&["n0"]), None);
+        // Single node: largest group = 1/1 → 1.0 for both switch and rack.
+        assert!((score - 1.0).abs() < 1e-9, "expected 1.0, got {score}");
+    }
+
+    #[test]
+    fn test_score_unknown_node_name_treated_as_missing() {
+        let nodes = vec![node("n0", Some("sw-1"), Some("rack-A"))];
+        let scorer = TopologyScorer::new(&nodes);
+        // "ghost" is not in node_map — should be silently skipped.
+        let score = scorer.score(&names(&["n0", "ghost"]), None);
+        // n0 contributes, ghost does not → 1/2 for switch, 1/2 for rack.
+        // score = 0.5*0.7 + 0.5*0.3 = 0.5
+        assert!((score - 0.5).abs() < 1e-9, "expected 0.5, got {score}");
+    }
+
+    #[test]
+    fn test_check_constraints_no_constraints_always_true() {
+        let nodes = vec![
+            node("n0", Some("sw-1"), Some("rack-A")),
+            node("n1", Some("sw-2"), Some("rack-B")),
+        ];
+        let scorer = TopologyScorer::new(&nodes);
+        let spec = TopologySpec {
+            prefer_same_switch: false,
+            max_hops: None,
+            topology_key: None,
+        };
+        // No constraints → always satisfied.
+        assert!(scorer.check_constraints(&names(&["n0", "n1"]), &spec));
+    }
+
+    #[test]
+    fn test_check_constraints_prefer_same_switch_and_max_hops_both_fail() {
+        let nodes = vec![
+            node("n0", Some("sw-1"), Some("rack-A")),
+            node("n1", Some("sw-2"), Some("rack-B")),
+        ];
+        let scorer = TopologyScorer::new(&nodes);
+        let spec = TopologySpec {
+            prefer_same_switch: true,
+            max_hops: Some(1),
+            topology_key: None,
+        };
+        // Both constraints fail (different switches, 3 hops).
+        assert!(!scorer.check_constraints(&names(&["n0", "n1"]), &spec));
+    }
+
+    #[test]
+    fn test_check_constraints_only_prefer_same_switch() {
+        let nodes = vec![
+            node("n0", Some("sw-1"), Some("rack-A")),
+            node("n1", Some("sw-1"), Some("rack-A")),
+        ];
+        let scorer = TopologyScorer::new(&nodes);
+        let spec = TopologySpec {
+            prefer_same_switch: true,
+            max_hops: None,
+            topology_key: None,
+        };
+        assert!(scorer.check_constraints(&names(&["n0", "n1"]), &spec));
+    }
+
+    #[test]
+    fn test_hops_between_unknown_nodes_returns_worst_case() {
+        let nodes: Vec<NodeResources> = vec![];
+        let scorer = TopologyScorer::new(&nodes);
+        // Neither node exists → worst case 3 hops.
+        assert!(!scorer.check_max_hops(&names(&["ghost-a", "ghost-b"]), 2));
+        assert!(scorer.check_max_hops(&names(&["ghost-a", "ghost-b"]), 3));
+    }
+
+    #[test]
+    fn test_hops_between_same_rack_different_switch_is_2() {
+        let nodes = vec![
+            node("n0", Some("sw-1"), Some("rack-A")),
+            node("n1", Some("sw-2"), Some("rack-A")), // same rack, different switch
+        ];
+        let scorer = TopologyScorer::new(&nodes);
+        assert!(!scorer.check_max_hops(&names(&["n0", "n1"]), 1));
+        assert!(scorer.check_max_hops(&names(&["n0", "n1"]), 2));
+    }
+
+    #[test]
+    fn test_prefer_same_switch_single_node_always_true() {
+        let nodes = vec![node("n0", Some("sw-1"), Some("rack-A"))];
+        let scorer = TopologyScorer::new(&nodes);
+        assert!(scorer.check_prefer_same_switch(&names(&["n0"])));
+    }
+
+    #[test]
+    fn test_check_max_hops_empty_list_returns_true() {
+        let nodes: Vec<NodeResources> = vec![];
+        let scorer = TopologyScorer::new(&nodes);
+        assert!(scorer.check_max_hops(&names(&[]), 1));
+    }
+
+    #[test]
+    fn test_score_switch_only_no_rack() {
+        // Nodes with switch groups but no rack — only switch score contributes.
+        let nodes = vec![
+            node("n0", Some("sw-1"), None),
+            node("n1", Some("sw-1"), None),
+        ];
+        let scorer = TopologyScorer::new(&nodes);
+        let score = scorer.score(&names(&["n0", "n1"]), None);
+        // switch_score = 1.0 * 0.7; rack_score = 0 (no rack info)
+        assert!((score - 0.7).abs() < 1e-9, "expected 0.7, got {score}");
+    }
+
+    #[test]
+    fn test_score_rack_only_no_switch() {
+        // Nodes with rack but no switch group.
+        let nodes = vec![
+            node("n0", None, Some("rack-A")),
+            node("n1", None, Some("rack-A")),
+        ];
+        let scorer = TopologyScorer::new(&nodes);
+        let score = scorer.score(&names(&["n0", "n1"]), None);
+        // rack_score = 1.0 * 0.3; switch_score = 0
+        assert!((score - 0.3).abs() < 1e-9, "expected 0.3, got {score}");
+    }
+
+    #[test]
     fn test_gang_scheduler_with_topology() {
         use crate::gang::GangScheduler;
         use wren_core::{ClusterState, TopologySpec};

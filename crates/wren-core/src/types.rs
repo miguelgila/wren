@@ -548,4 +548,131 @@ mod tests {
             assert_eq!(parsed, state);
         }
     }
+
+    #[test]
+    fn test_walltime_parse_whitespace_trimmed() {
+        let wt = WalltimeDuration::parse("  4h  ").unwrap();
+        assert_eq!(wt.seconds, 14400);
+    }
+
+    #[test]
+    fn test_walltime_parse_only_whitespace_is_error() {
+        assert!(WalltimeDuration::parse("   ").is_err());
+    }
+
+    #[test]
+    fn test_walltime_parse_unknown_suffix_is_error() {
+        assert!(WalltimeDuration::parse("4w").is_err()); // weeks not supported
+        assert!(WalltimeDuration::parse("4y").is_err());
+    }
+
+    #[test]
+    fn test_walltime_display_minutes_exact() {
+        assert_eq!(WalltimeDuration { seconds: 120 }.to_string(), "2m");
+        assert_eq!(WalltimeDuration { seconds: 3600 }.to_string(), "1h0m");
+    }
+
+    #[test]
+    fn test_walltime_as_duration_zero() {
+        // WalltimeDuration with 0 seconds (not normally constructible via parse
+        // but representable as struct).
+        let wt = WalltimeDuration { seconds: 0 };
+        assert_eq!(wt.as_duration(), std::time::Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_cluster_state_allocate_same_node_multiple_jobs() {
+        let mut state = ClusterState::new();
+        state.nodes.push(NodeResources {
+            name: "n0".to_string(),
+            allocatable_cpu_millis: 16000,
+            allocatable_memory_bytes: 32_000_000_000,
+            allocatable_gpus: 8,
+            labels: HashMap::new(),
+            switch_group: None,
+            rack: None,
+        });
+
+        state.allocate("n0", 4000, 8_000_000_000, 2, "job-1");
+        state.allocate("n0", 4000, 8_000_000_000, 2, "job-2");
+
+        let (cpu, mem, gpu) = state.available_resources("n0").unwrap();
+        assert_eq!(cpu, 8000);
+        assert_eq!(mem, 16_000_000_000);
+        assert_eq!(gpu, 4);
+
+        let alloc = &state.allocations["n0"];
+        assert!(alloc.jobs.contains(&"job-1".to_string()));
+        assert!(alloc.jobs.contains(&"job-2".to_string()));
+    }
+
+    #[test]
+    fn test_cluster_state_deallocate_only_removes_one_job_name() {
+        let mut state = ClusterState::new();
+        state.nodes.push(NodeResources {
+            name: "n0".to_string(),
+            allocatable_cpu_millis: 16000,
+            allocatable_memory_bytes: 32_000_000_000,
+            allocatable_gpus: 0,
+            labels: HashMap::new(),
+            switch_group: None,
+            rack: None,
+        });
+
+        state.allocate("n0", 4000, 0, 0, "job-1");
+        state.allocate("n0", 4000, 0, 0, "job-2");
+        state.deallocate("n0", 4000, 0, 0, "job-1");
+
+        let alloc = &state.allocations["n0"];
+        assert!(!alloc.jobs.contains(&"job-1".to_string()));
+        assert!(alloc.jobs.contains(&"job-2".to_string()));
+        assert_eq!(alloc.used_cpu_millis, 4000);
+    }
+
+    #[test]
+    fn test_node_resources_no_switch_no_rack() {
+        let node = NodeResources {
+            name: "bare-node".to_string(),
+            allocatable_cpu_millis: 4000,
+            allocatable_memory_bytes: 8_000_000_000,
+            allocatable_gpus: 0,
+            labels: HashMap::new(),
+            switch_group: None,
+            rack: None,
+        };
+        assert!(node.switch_group.is_none());
+        assert!(node.rack.is_none());
+    }
+
+    #[test]
+    fn test_execution_backend_type_reaper_serde() {
+        let json = serde_json::to_string(&ExecutionBackendType::Reaper).unwrap();
+        assert_eq!(json, r#""reaper""#);
+        let parsed: ExecutionBackendType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ExecutionBackendType::Reaper);
+    }
+
+    #[test]
+    fn test_queued_job_fields() {
+        let now = chrono::Utc::now();
+        let job = QueuedJob {
+            name: "test-job".to_string(),
+            namespace: "default".to_string(),
+            queue: "gpu".to_string(),
+            priority: 100,
+            nodes: 4,
+            tasks_per_node: 8,
+            cpu_per_node_millis: 8000,
+            memory_per_node_bytes: 16_000_000_000,
+            gpus_per_node: 4,
+            walltime: Some(WalltimeDuration { seconds: 3600 }),
+            submit_time: now,
+        };
+        assert_eq!(job.name, "test-job");
+        assert_eq!(job.nodes, 4);
+        assert_eq!(job.tasks_per_node, 8);
+        assert_eq!(job.gpus_per_node, 4);
+        assert_eq!(job.walltime.unwrap().seconds, 3600);
+        assert_eq!(job.submit_time, now);
+    }
 }

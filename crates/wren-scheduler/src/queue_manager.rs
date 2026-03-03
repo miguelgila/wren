@@ -558,4 +558,173 @@ mod tests {
 
         assert!(mgr.queue_stats("unknown").is_none());
     }
+
+    #[test]
+    fn test_remove_queue_empty_succeeds() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue("temp", default_config(10));
+        assert!(mgr.queue_names().contains(&"temp".to_string()));
+
+        mgr.remove_queue("temp").unwrap();
+        assert!(!mgr.queue_names().contains(&"temp".to_string()));
+    }
+
+    #[test]
+    fn test_remove_queue_not_found_returns_error() {
+        let mut mgr = QueueManager::new("default");
+        let result = mgr.remove_queue("nonexistent");
+        assert!(matches!(result, Err(WrenError::QueueNotFound { .. })));
+    }
+
+    #[test]
+    fn test_remove_queue_with_pending_jobs_fails() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue("busy", default_config(100));
+        mgr.submit_job(make_job("j1", "busy", "user-a", 50, 1))
+            .unwrap();
+
+        let result = mgr.remove_queue("busy");
+        assert!(
+            matches!(result, Err(WrenError::ValidationError { .. })),
+            "should not be able to remove a queue that has pending jobs"
+        );
+    }
+
+    #[test]
+    fn test_register_queue_updates_existing_config() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue("q", default_config(10));
+
+        // Submit a job and start it to set counters.
+        mgr.submit_job(make_job("j1", "q", "user-a", 50, 1))
+            .unwrap();
+        mgr.next_job_from("q");
+        mgr.record_job_started("q", 1, "user-a");
+
+        // Re-register with new config — should update config but preserve counters.
+        mgr.register_queue("q", default_config(999));
+
+        let stats = mgr.queue_stats("q").unwrap();
+        assert_eq!(stats.max_nodes, 999); // config updated
+        assert_eq!(stats.active_jobs, 1); // counters preserved
+    }
+
+    #[test]
+    fn test_record_job_finished_saturating_subtraction() {
+        let mut mgr = QueueManager::new("default");
+        // Call finish without a matching start — should not panic.
+        mgr.record_job_finished("default", 999, "user-x");
+
+        let stats = mgr.queue_stats("default").unwrap();
+        assert_eq!(stats.active_jobs, 0);
+        assert_eq!(stats.used_nodes, 0);
+    }
+
+    #[test]
+    fn test_record_on_unknown_queue_does_nothing() {
+        let mut mgr = QueueManager::new("default");
+        // These should not panic.
+        mgr.record_job_started("unknown", 4, "user-a");
+        mgr.record_job_finished("unknown", 4, "user-a");
+    }
+
+    #[test]
+    fn test_queue_depth_unknown_queue_returns_zero() {
+        let mgr = QueueManager::new("default");
+        assert_eq!(mgr.queue_depth("unknown-queue"), 0);
+    }
+
+    #[test]
+    fn test_total_depth_across_multiple_queues() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue("gpu", default_config(128));
+        mgr.register_queue("cpu", default_config(256));
+
+        mgr.submit_job(make_job("j1", "default", "u", 50, 1))
+            .unwrap();
+        mgr.submit_job(make_job("j2", "gpu", "u", 50, 1)).unwrap();
+        mgr.submit_job(make_job("j3", "gpu", "u", 50, 1)).unwrap();
+        mgr.submit_job(make_job("j4", "cpu", "u", 50, 1)).unwrap();
+
+        assert_eq!(mgr.total_depth(), 4);
+        assert_eq!(mgr.queue_depth("default"), 1);
+        assert_eq!(mgr.queue_depth("gpu"), 2);
+        assert_eq!(mgr.queue_depth("cpu"), 1);
+    }
+
+    #[test]
+    fn test_next_job_empty_queues_returns_none() {
+        let mut mgr = QueueManager::new("default");
+        assert!(mgr.next_job().is_none());
+    }
+
+    #[test]
+    fn test_next_job_from_unknown_queue_returns_none() {
+        let mut mgr = QueueManager::new("default");
+        assert!(mgr.next_job_from("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_max_jobs_per_user_different_users_independent() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue(
+            "fair",
+            QueueConfig {
+                max_nodes: 1000,
+                max_walltime: None,
+                max_jobs_per_user: Some(1),
+                default_priority: 50,
+            },
+        );
+
+        mgr.record_job_started("fair", 1, "user-a");
+
+        // user-a is at limit — should fail.
+        let result_a = mgr.submit_job(make_job("job-a2", "fair", "user-a", 50, 1));
+        assert!(matches!(result_a, Err(WrenError::ValidationError { .. })));
+
+        // user-b has no jobs — should succeed.
+        let result_b = mgr.submit_job(make_job("job-b1", "fair", "user-b", 50, 1));
+        assert!(result_b.is_ok());
+    }
+
+    #[test]
+    fn test_walltime_no_constraint_passes_any_walltime() {
+        let mut mgr = QueueManager::new("default");
+        // Queue with no walltime limit — any job walltime should be accepted.
+        mgr.register_queue("unlimited", default_config(100));
+
+        let job = make_job_with_walltime("long-job", "unlimited", 7 * 24 * 3600); // 1 week
+        mgr.submit_job(job).unwrap();
+    }
+
+    #[test]
+    fn test_submit_job_no_walltime_skips_walltime_check() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue(
+            "limited",
+            QueueConfig {
+                max_nodes: 100,
+                max_walltime: Some(WalltimeDuration { seconds: 3600 }),
+                max_jobs_per_user: None,
+                default_priority: 50,
+            },
+        );
+        // Job with no walltime should be allowed regardless of the queue limit.
+        let job = make_job("no-wt", "limited", "user-a", 50, 1);
+        mgr.submit_job(job).unwrap();
+    }
+
+    #[test]
+    fn test_queue_names_sorted() {
+        let mut mgr = QueueManager::new("default");
+        mgr.register_queue("zebra", default_config(10));
+        mgr.register_queue("alpha", default_config(10));
+        mgr.register_queue("mango", default_config(10));
+
+        let names = mgr.queue_names();
+        let mut expected = names.clone();
+        expected.sort();
+        assert_eq!(names, expected, "queue_names() should be sorted");
+    }
 }

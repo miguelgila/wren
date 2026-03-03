@@ -379,4 +379,95 @@ mod tests {
         assert_eq!(tracker.cpu_utilization(), 0.0);
         assert_eq!(tracker.memory_utilization(), 0.0);
     }
+
+    #[test]
+    fn test_gpu_utilization_empty_cluster() {
+        let tracker = ResourceTracker::new(ClusterState::new());
+        assert_eq!(tracker.total_gpus(), 0);
+        assert_eq!(tracker.used_gpus(), 0);
+    }
+
+    #[test]
+    fn test_remove_node_with_allocation_cleans_up() {
+        let mut tracker = two_node_tracker();
+        let placement = make_placement(&["node-0"]);
+        tracker
+            .try_allocate("job-1", &placement, 4000, 8_000_000_000, 0)
+            .unwrap();
+
+        // Remove node-0 — its allocation entry should also be gone.
+        tracker.remove_node("node-0");
+        assert_eq!(tracker.node_count(), 1);
+        // used_cpu_millis should drop to 0 since node-0's allocation is removed.
+        assert_eq!(tracker.used_cpu_millis(), 0);
+    }
+
+    #[test]
+    fn test_remove_nonexistent_node_does_not_panic() {
+        let mut tracker = two_node_tracker();
+        tracker.remove_node("node-99"); // should not panic
+        assert_eq!(tracker.node_count(), 2);
+    }
+
+    #[test]
+    fn test_cluster_state_reference_unchanged_after_allocate() {
+        let tracker = two_node_tracker();
+        let state = tracker.cluster_state();
+        assert_eq!(state.nodes.len(), 2);
+    }
+
+    #[test]
+    fn test_try_allocate_rollback_on_first_node_failure() {
+        // node-0 has enough resources, node-1 does not.
+        let mut state = ClusterState::new();
+        state
+            .nodes
+            .push(make_node("node-0", 8000, 16_000_000_000, 0));
+        state
+            .nodes
+            .push(make_node("node-1", 1000, 16_000_000_000, 0)); // insufficient CPU
+        let mut tracker = ResourceTracker::new(state);
+
+        // Both nodes are in the placement — node-1 will fail the check.
+        let placement = make_placement(&["node-0", "node-1"]);
+        let result = tracker.try_allocate("job-1", &placement, 4000, 8_000_000_000, 0);
+        assert!(result.is_err());
+
+        // node-0 must not have been mutated (check phase should catch node-1 first).
+        assert_eq!(tracker.used_cpu_millis(), 0);
+        assert_eq!(tracker.used_memory_bytes(), 0);
+    }
+
+    #[test]
+    fn test_used_metrics_with_gpu_allocation() {
+        let mut tracker = two_node_tracker();
+        let placement = make_placement(&["node-0"]);
+        tracker
+            .try_allocate("gpu-job", &placement, 2000, 4_000_000_000, 2)
+            .unwrap();
+
+        assert_eq!(tracker.used_gpus(), 2);
+        // total_gpus = 4 + 4 = 8 across two nodes.
+        assert_eq!(tracker.total_gpus(), 8);
+    }
+
+    #[test]
+    fn test_full_allocation_and_release_cycle() {
+        let mut tracker = two_node_tracker();
+        let placement = make_placement(&["node-0", "node-1"]);
+
+        tracker
+            .try_allocate("job-full", &placement, 8000, 16_000_000_000, 4)
+            .unwrap();
+
+        // Cluster should be fully occupied.
+        assert_eq!(tracker.used_cpu_millis(), 16000);
+        assert_eq!(tracker.total_cpu_millis(), 16000);
+        assert!((tracker.cpu_utilization() - 1.0).abs() < 1e-9);
+
+        tracker.release("job-full", &placement, 8000, 16_000_000_000, 4);
+
+        assert_eq!(tracker.used_cpu_millis(), 0);
+        assert!((tracker.cpu_utilization() - 0.0).abs() < 1e-9);
+    }
 }
