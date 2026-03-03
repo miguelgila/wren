@@ -44,7 +44,7 @@ export KUBECONFIG="${LOG_DIR}/kubeconfig"
 export KUBECONFIG_FILE="${KUBECONFIG}"
 
 # Pod label key used by the controller to associate pods with an WrenJob.
-WREN_JOB_LABEL="wren.io/job-name"
+WREN_JOB_LABEL="wren.scops-hpc.com/job-name"
 
 # ---------------------------------------------------------------------------
 # Flags (set via CLI arguments, matching Reaper's interface)
@@ -326,8 +326,8 @@ setup_cluster() {
     kubectl cluster-info --context "kind-${CLUSTER_NAME}"
     log "Nodes and topology labels:"
     kubectl get nodes \
-        -L topology.wren.io/switch \
-        -L topology.wren.io/rack \
+        -L topology.wren.scops-hpc.com/switch \
+        -L topology.wren.scops-hpc.com/rack \
         -L topology.kubernetes.io/zone
     success "Cluster is reachable"
 }
@@ -585,7 +585,7 @@ delete_job() {
     # Delete associated pods first (they may not have ownerReferences)
     kubectl delete pods \
         -n "${TEST_NAMESPACE}" \
-        -l "wren.io/job-name=${job_name}" \
+        -l "wren.scops-hpc.com/job-name=${job_name}" \
         --ignore-not-found \
         --timeout=30s 2>/dev/null || true
     # Then delete the WrenJob
@@ -646,8 +646,8 @@ _smoke_test_topology_labels() {
 
     # Each worker node must have all three topology keys
     local expected_keys=(
-        "topology.wren.io/switch"
-        "topology.wren.io/rack"
+        "topology.wren.scops-hpc.com/switch"
+        "topology.wren.scops-hpc.com/rack"
         "topology.kubernetes.io/zone"
     )
 
@@ -669,8 +669,11 @@ _smoke_test_topology_labels() {
     for node in ${worker_nodes}; do
         for key in "${expected_keys[@]}"; do
             local val
+            # Escape both dots and slashes for jsonpath dot notation
+            local escaped
+            escaped=$(echo "$key" | sed 's/\./\\./g' | sed 's|/|\\/|g')
             val=$(kubectl get node "${node}" \
-                -o jsonpath="{.metadata.labels.${key//\//\\.}}" 2>/dev/null || echo "")
+                -o jsonpath="{.metadata.labels.${escaped}}" 2>/dev/null || echo "")
             if [[ -z "$val" ]]; then
                 error "Node '${node}' is missing label '${key}'"
                 errors=$(( errors + 1 ))
@@ -683,10 +686,10 @@ _smoke_test_topology_labels() {
     # Verify the expected topology groups are present
     local switch0_count switch1_count
     switch0_count=$(kubectl get nodes \
-        -l "topology.wren.io/switch=switch-0" \
+        -l "topology.wren.scops-hpc.com/switch=switch-0" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
     switch1_count=$(kubectl get nodes \
-        -l "topology.wren.io/switch=switch-1" \
+        -l "topology.wren.scops-hpc.com/switch=switch-1" \
         --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [[ "$switch0_count" -ne 2 ]]; then
@@ -968,7 +971,7 @@ smoke_test_concurrent_jobs() {
 
 # ---------------------------------------------------------------------------
 # Smoke test 7: Pod label selector — submit a job, wait for pods, verify
-# the pods carry the correct wren.io/job-name label.
+# the pods carry the correct wren.scops-hpc.com/job-name label.
 # ---------------------------------------------------------------------------
 _smoke_test_pod_labels() {
     local job_name="smoke-pod-labels"
@@ -1031,7 +1034,7 @@ EOF
 }
 
 smoke_test_pod_labels() {
-    run_test "pod label selector (wren.io/job-name)" _smoke_test_pod_labels
+    run_test "pod label selector (wren.scops-hpc.com/job-name)" _smoke_test_pod_labels
 }
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1042,7 @@ smoke_test_pod_labels() {
 # ---------------------------------------------------------------------------
 _smoke_test_headless_service() {
     local job_name="smoke-headless-svc"
+    local svc_name="${job_name}-workers"
     local manifest
     manifest="$(cat <<EOF
 apiVersion: wren.scops-hpc.com/v1alpha1
@@ -1051,12 +1055,15 @@ spec:
   nodes: 1
   tasksPerNode: 1
   walltime: "5m"
+  mpi:
+    implementation: openmpi
+    sshAuth: true
   container:
     image: busybox:latest
     command: ["sh", "-c", "echo hello && sleep 60"]
 EOF
 )"
-    log "Submitting WrenJob '${job_name}' to check headless service ..."
+    log "Submitting MPI WrenJob '${job_name}' to check headless service ..."
     echo "${manifest}" | kubectl apply -f -
 
     # Wait for job to start
@@ -1069,22 +1076,22 @@ EOF
     local deadline=$(( $(date +%s) + 30 ))
     local svc_count=0
 
-    log "Waiting for headless service named '${job_name}' ..."
+    log "Waiting for headless service named '${svc_name}' ..."
     while true; do
         svc_count=$(kubectl get svc -n "${TEST_NAMESPACE}" \
-            --field-selector="metadata.name=${job_name}" \
+            --field-selector="metadata.name=${svc_name}" \
             --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
         if [[ "$svc_count" -gt 0 ]]; then
-            success "Headless service '${job_name}' found"
+            success "Headless service '${svc_name}' found"
             kubectl get svc -n "${TEST_NAMESPACE}" \
-                --field-selector="metadata.name=${job_name}"
+                --field-selector="metadata.name=${svc_name}"
             delete_job "${job_name}"
             return 0
         fi
 
         if [[ "$(date +%s)" -ge "$deadline" ]]; then
-            warn "No headless service named '${job_name}' found after 30s"
+            warn "No headless service named '${svc_name}' found after 30s"
             warn "This may be expected if service creation is not yet implemented"
             delete_job "${job_name}"
             # Not a hard failure in early development

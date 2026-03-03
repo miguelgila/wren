@@ -69,10 +69,10 @@ pub fn job_labels(
         "app.kubernetes.io/managed-by".to_string(),
         "wren".to_string(),
     );
-    labels.insert("wren.io/job-name".to_string(), job_name.to_string());
-    labels.insert("wren.io/role".to_string(), role.to_string());
+    labels.insert("wren.scops-hpc.com/job-name".to_string(), job_name.to_string());
+    labels.insert("wren.scops-hpc.com/role".to_string(), role.to_string());
     if let Some(r) = rank {
-        labels.insert("wren.io/rank".to_string(), r.to_string());
+        labels.insert("wren.scops-hpc.com/rank".to_string(), r.to_string());
     }
     labels
 }
@@ -320,9 +320,9 @@ mod tests {
     #[test]
     fn test_job_labels() {
         let labels = job_labels("my-sim", "worker", Some(3));
-        assert_eq!(labels["wren.io/job-name"], "my-sim");
-        assert_eq!(labels["wren.io/role"], "worker");
-        assert_eq!(labels["wren.io/rank"], "3");
+        assert_eq!(labels["wren.scops-hpc.com/job-name"], "my-sim");
+        assert_eq!(labels["wren.scops-hpc.com/role"], "worker");
+        assert_eq!(labels["wren.scops-hpc.com/rank"], "3");
     }
 
     #[test]

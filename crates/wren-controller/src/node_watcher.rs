@@ -50,7 +50,7 @@ impl NodeWatcher {
 
         let btree_labels = node.metadata.labels.clone().unwrap_or_default();
 
-        let switch_group = btree_labels.get("network.wren.io/switch-group").cloned();
+        let switch_group = btree_labels.get("network.wren.scops-hpc.com/switch-group").cloned();
         let rack = btree_labels.get("topology.kubernetes.io/zone").cloned();
 
         let labels: std::collections::HashMap<String, String> = btree_labels.into_iter().collect();
@@ -186,7 +186,7 @@ mod tests {
 
         let mut labels = BTreeMap::new();
         labels.insert(
-            "network.wren.io/switch-group".to_string(),
+            "network.wren.scops-hpc.com/switch-group".to_string(),
             "sw-rack-01".to_string(),
         );
 
