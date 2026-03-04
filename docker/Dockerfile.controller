@@ -1,7 +1,17 @@
 # Stage 1: Build
 FROM rust:1.88-bookworm AS builder
 
-RUN rustup target add x86_64-unknown-linux-musl \
+# TARGETARCH is auto-populated by BuildKit (amd64 or arm64)
+ARG TARGETARCH
+
+# Map Docker platform arch to Rust target triple
+RUN case "$TARGETARCH" in \
+      amd64) echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
+      arm64) echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
+      *) echo "Unsupported arch: $TARGETARCH" && exit 1 ;; \
+    esac \
+    && RUST_TARGET=$(cat /tmp/rust-target) \
+    && rustup target add "$RUST_TARGET" \
     && apt-get update \
     && apt-get install -y --no-install-recommends musl-tools \
     && rm -rf /var/lib/apt/lists/*
@@ -14,19 +24,22 @@ COPY crates/wren-core/Cargo.toml crates/wren-core/Cargo.toml
 COPY crates/wren-scheduler/Cargo.toml crates/wren-scheduler/Cargo.toml
 COPY crates/wren-controller/Cargo.toml crates/wren-controller/Cargo.toml
 COPY crates/wren-cli/Cargo.toml crates/wren-cli/Cargo.toml
-RUN mkdir -p crates/wren-core/src crates/wren-scheduler/src crates/wren-controller/src crates/wren-cli/src \
+RUN RUST_TARGET=$(cat /tmp/rust-target) \
+    && mkdir -p crates/wren-core/src crates/wren-scheduler/src crates/wren-controller/src crates/wren-cli/src \
     && echo "pub fn stub(){}" > crates/wren-core/src/lib.rs \
     && echo "pub fn stub(){}" > crates/wren-scheduler/src/lib.rs \
     && echo "fn main(){}" > crates/wren-controller/src/main.rs \
     && echo "fn main(){}" > crates/wren-cli/src/main.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --bin wren-controller \
+    && cargo build --release --target "$RUST_TARGET" --bin wren-controller \
     && rm -rf crates/
 
 # Layer 2: real source (only this rebuilds on code changes)
 COPY crates/ crates/
-RUN touch crates/wren-core/src/lib.rs crates/wren-scheduler/src/lib.rs \
-          crates/wren-controller/src/main.rs crates/wren-cli/src/main.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --bin wren-controller
+RUN RUST_TARGET=$(cat /tmp/rust-target) \
+    && touch crates/wren-core/src/lib.rs crates/wren-scheduler/src/lib.rs \
+             crates/wren-controller/src/main.rs crates/wren-cli/src/main.rs \
+    && cargo build --release --target "$RUST_TARGET" --bin wren-controller \
+    && cp target/"$RUST_TARGET"/release/wren-controller /usr/local/bin/wren-controller
 
 # Stage 2: Runtime with pre-built binary (used by CI with --target runtime-prebuilt)
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime-prebuilt
@@ -38,6 +51,6 @@ ENTRYPOINT ["/usr/local/bin/wren-controller"]
 # Stage 3: Runtime (default target — builds from source)
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
-COPY --from=builder /usr/src/wren/target/x86_64-unknown-linux-musl/release/wren-controller /usr/local/bin/wren-controller
+COPY --from=builder /usr/local/bin/wren-controller /usr/local/bin/wren-controller
 
 ENTRYPOINT ["/usr/local/bin/wren-controller"]
