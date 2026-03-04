@@ -410,4 +410,81 @@ mod tests {
         let now = SystemTime::now();
         assert!(!lease_is_held_by_other(&spec, "my-pod", now));
     }
+
+    // --- to_micro_time ---
+
+    #[test]
+    fn test_to_micro_time_roundtrip() {
+        let now = SystemTime::now();
+        let micro = to_micro_time(now);
+        // MicroTime wraps a chrono DateTime — verify it's close to now
+        let dt: chrono::DateTime<chrono::Utc> = now.into();
+        let diff = (micro.0 - dt).num_milliseconds().abs();
+        assert!(
+            diff < 1000,
+            "to_micro_time should preserve time within 1s, diff={diff}ms"
+        );
+    }
+
+    #[test]
+    fn test_to_micro_time_epoch() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        let micro = to_micro_time(epoch);
+        assert_eq!(micro.0.timestamp(), 0);
+    }
+
+    // --- lease_is_held_by_other edge cases ---
+
+    #[test]
+    fn test_lease_no_renew_time_not_held() {
+        // Holder set but no renew_time — can't determine expiry, so not held
+        let spec = LeaseSpec {
+            holder_identity: Some("other-pod".to_string()),
+            lease_duration_seconds: Some(15),
+            renew_time: None,
+            acquire_time: None,
+            lease_transitions: Some(0),
+            preferred_holder: None,
+            strategy: None,
+        };
+        let now = SystemTime::now();
+        assert!(!lease_is_held_by_other(&spec, "my-pod", now));
+    }
+
+    #[test]
+    fn test_lease_held_by_other_just_renewed() {
+        // Renewed 0 seconds ago, duration 15s — definitely held
+        let spec = make_spec("other-pod", 0, 15);
+        let now = SystemTime::now();
+        assert!(lease_is_held_by_other(&spec, "my-pod", now));
+    }
+
+    #[test]
+    fn test_lease_held_by_other_one_second_left() {
+        // Renewed 14s ago, duration 15s — still held (1s left)
+        let spec = make_spec("other-pod", 14, 15);
+        let now = SystemTime::now();
+        assert!(lease_is_held_by_other(&spec, "my-pod", now));
+    }
+
+    #[test]
+    fn test_lease_default_duration_when_none() {
+        // lease_duration_seconds is None — defaults to 15
+        let renew_time = SystemTime::now()
+            .checked_sub(Duration::from_secs(5))
+            .unwrap();
+        let dt: chrono::DateTime<chrono::Utc> = renew_time.into();
+        let spec = LeaseSpec {
+            holder_identity: Some("other-pod".to_string()),
+            lease_duration_seconds: None, // defaults to 15
+            renew_time: Some(MicroTime(dt)),
+            acquire_time: None,
+            lease_transitions: Some(0),
+            preferred_holder: None,
+            strategy: None,
+        };
+        let now = SystemTime::now();
+        // 5s ago with default 15s duration — still held
+        assert!(lease_is_held_by_other(&spec, "my-pod", now));
+    }
 }

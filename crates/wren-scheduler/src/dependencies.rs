@@ -954,4 +954,205 @@ mod tests {
         let unique: HashSet<_> = ready.iter().cloned().collect();
         assert_eq!(ready.len(), unique.len());
     }
+
+    // ------------------------------------------------------------------
+    // Additional dependency / lifecycle tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_update_job_state_overwrites_previous() {
+        let mut resolver = DependencyResolver::new();
+        resolver.update_job_state("dep-job", JobState::Running);
+        resolver.register_job("my-job", vec![dep(DependencyType::AfterOk, "dep-job")]);
+
+        // Still running → waiting.
+        assert!(matches!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Waiting { .. }
+        ));
+
+        // Now succeeded → satisfied.
+        resolver.update_job_state("dep-job", JobState::Succeeded);
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
+    }
+
+    #[test]
+    fn test_register_job_overwrites_existing_deps() {
+        let mut resolver = DependencyResolver::new();
+        resolver.update_job_state("a", JobState::Running);
+        resolver.update_job_state("b", JobState::Succeeded);
+
+        resolver.register_job("c", vec![dep(DependencyType::AfterOk, "a")]);
+        // c waits for a.
+        assert!(matches!(
+            resolver.check_dependencies("c"),
+            DependencyStatus::Waiting { .. }
+        ));
+
+        // Re-register c with a different dep list.
+        resolver.register_job("c", vec![dep(DependencyType::AfterOk, "b")]);
+        // Now c only depends on b (succeeded) → satisfied.
+        assert_eq!(
+            resolver.check_dependencies("c"),
+            DependencyStatus::Satisfied
+        );
+    }
+
+    #[test]
+    fn test_after_any_satisfied_on_walltime_exceeded() {
+        let mut resolver = DependencyResolver::new();
+        resolver.update_job_state("dep-job", JobState::WalltimeExceeded);
+        resolver.register_job("my-job", vec![dep(DependencyType::AfterAny, "dep-job")]);
+
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
+    }
+
+    #[test]
+    fn test_after_not_ok_satisfied_on_cancelled() {
+        let mut resolver = DependencyResolver::new();
+        resolver.update_job_state("dep-job", JobState::Cancelled);
+        resolver.register_job("my-job", vec![dep(DependencyType::AfterNotOk, "dep-job")]);
+
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
+    }
+
+    #[test]
+    fn test_after_not_ok_satisfied_on_walltime_exceeded() {
+        let mut resolver = DependencyResolver::new();
+        resolver.update_job_state("dep-job", JobState::WalltimeExceeded);
+        resolver.register_job("my-job", vec![dep(DependencyType::AfterNotOk, "dep-job")]);
+
+        assert_eq!(
+            resolver.check_dependencies("my-job"),
+            DependencyStatus::Satisfied
+        );
+    }
+
+    #[test]
+    fn test_dependency_resolver_default_is_same_as_new() {
+        let r1 = DependencyResolver::new();
+        let r2 = DependencyResolver::default();
+        // Both should have empty state.
+        assert!(r1.ready_jobs().is_empty());
+        assert!(r2.ready_jobs().is_empty());
+    }
+
+    #[test]
+    fn test_remove_job_no_longer_appears_in_ready_jobs() {
+        let mut resolver = DependencyResolver::new();
+        resolver.register_job("a", vec![]);
+        resolver.register_job("b", vec![]);
+
+        let mut ready = resolver.ready_jobs();
+        ready.sort();
+        assert_eq!(ready, vec!["a", "b"]);
+
+        resolver.remove_job("a");
+
+        let mut ready = resolver.ready_jobs();
+        ready.sort();
+        assert_eq!(ready, vec!["b"]);
+    }
+
+    #[test]
+    fn test_validate_no_cycles_empty_resolver() {
+        let resolver = DependencyResolver::new();
+        assert!(resolver.validate_no_cycles().is_ok());
+    }
+
+    #[test]
+    fn test_validate_no_cycles_single_job_no_deps() {
+        let mut resolver = DependencyResolver::new();
+        resolver.register_job("solo", vec![]);
+        assert!(resolver.validate_no_cycles().is_ok());
+    }
+
+    #[test]
+    fn test_validate_no_cycles_diamond() {
+        // a -> b, a -> c, b -> d, c -> d (diamond, no cycle).
+        let mut resolver = DependencyResolver::new();
+        resolver.register_job("a", vec![]);
+        resolver.register_job("b", vec![dep(DependencyType::AfterOk, "a")]);
+        resolver.register_job("c", vec![dep(DependencyType::AfterOk, "a")]);
+        resolver.register_job(
+            "d",
+            vec![
+                dep(DependencyType::AfterOk, "b"),
+                dep(DependencyType::AfterOk, "c"),
+            ],
+        );
+        assert!(resolver.validate_no_cycles().is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // JobArraySpec additional edge cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_single_element_array() {
+        let spec = JobArraySpec::parse("5-5").unwrap();
+        assert_eq!(spec.start, 5);
+        assert_eq!(spec.end, 5);
+        assert_eq!(spec.step, 1);
+        assert_eq!(spec.task_count(), 1);
+    }
+
+    #[test]
+    fn test_expand_single_element() {
+        let spec = JobArraySpec::parse("7-7").unwrap();
+        let jobs = spec.expand("single");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].array_index, 7);
+        assert_eq!(jobs[0].name, "single_7");
+    }
+
+    #[test]
+    fn test_task_count_with_step_does_not_reach_end() {
+        // 0, 2, 4, 6, 8 → step=2, end=9 → 5 tasks (9 is not included since 8+2=10>9).
+        let spec = JobArraySpec::parse("0-9:2").unwrap();
+        assert_eq!(spec.task_count(), 5);
+    }
+
+    #[test]
+    fn test_parse_invalid_start_index() {
+        assert!(JobArraySpec::parse("abc-9").is_err());
+    }
+
+    #[test]
+    fn test_parse_invalid_end_index() {
+        assert!(JobArraySpec::parse("0-xyz").is_err());
+    }
+
+    #[test]
+    fn test_parse_invalid_step_value() {
+        assert!(JobArraySpec::parse("0-9:abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_invalid_max_concurrent_value() {
+        assert!(JobArraySpec::parse("0-9%abc").is_err());
+    }
+
+    #[test]
+    fn test_expand_large_step_fewer_tasks() {
+        // step=10, range 0-9 → only index 0 (since 0+10=10 > 9).
+        let spec = JobArraySpec {
+            start: 0,
+            end: 9,
+            step: 10,
+            max_concurrent: None,
+        };
+        let jobs = spec.expand("big-step");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].array_index, 0);
+    }
 }

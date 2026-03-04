@@ -831,4 +831,97 @@ mod tests {
         assert_eq!(req.environment["WREN_MPI_IMPL"], "cray-mpich");
         assert_eq!(req.environment["WREN_FABRIC_INTERFACE"], "hsn0");
     }
+
+    // --- build_job_request edge cases ---
+
+    #[test]
+    fn test_build_job_request_mpi_impl_without_fabric() {
+        use wren_core::MPISpec;
+        let backend = ReaperBackend::new();
+        let mut spec = make_reaper_spec(2, 4);
+        spec.mpi = Some(MPISpec {
+            implementation: "openmpi".to_string(),
+            ssh_auth: false,
+            fabric_interface: None,
+        });
+        let placement = make_placement(&["n0", "n1"]);
+        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        assert_eq!(req.environment["WREN_MPI_IMPL"], "openmpi");
+        assert!(!req.environment.contains_key("WREN_FABRIC_INTERFACE"));
+    }
+
+    #[test]
+    fn test_build_job_request_script_preserved() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["n0"]);
+        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        assert_eq!(req.script, "#!/bin/bash\nmpirun ./app");
+    }
+
+    #[test]
+    fn test_build_job_request_single_node_single_rank() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["solo-node"]);
+        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        assert_eq!(req.environment["WREN_TOTAL_RANKS"], "1");
+        assert_eq!(req.environment["WREN_NUM_NODES"], "1");
+        assert_eq!(req.environment["WREN_MPI_RANK"], "0");
+        assert_eq!(req.environment["WREN_HOSTFILE"], "solo-node slots=1");
+    }
+
+    #[test]
+    fn test_build_job_request_large_cluster() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(8, 4);
+        let placement = Placement {
+            nodes: (0..8).map(|i| format!("node-{i}")).collect(),
+            score: 1.0,
+        };
+        let req = backend.build_job_request(&spec, &placement, 7).unwrap();
+        assert_eq!(req.environment["WREN_TOTAL_RANKS"], "32"); // 8*4
+        assert_eq!(req.environment["WREN_MPI_RANK"], "7");
+        assert_eq!(req.environment["WREN_NUM_NODES"], "8");
+    }
+
+    // --- map_reaper_state edge cases ---
+
+    #[test]
+    fn test_map_reaper_state_failed_exit_code_zero_with_failed_status() {
+        // Edge case: status says Failed but exit_code is 0
+        let status = ReaperJobStatus {
+            job_id: "j1".to_string(),
+            status: ReaperJobState::Failed,
+            exit_code: Some(0),
+            message: Some("killed by signal".to_string()),
+        };
+        let mapped = map_reaper_state(&status);
+        assert_eq!(
+            mapped,
+            BackendJobStatus::Failed {
+                message: "killed by signal".to_string()
+            }
+        );
+    }
+
+    // --- ReaperJobStatus serde ---
+
+    #[test]
+    fn test_reaper_job_status_minimal_json() {
+        let json = r#"{"job_id": "abc", "status": "pending"}"#;
+        let status: ReaperJobStatus = serde_json::from_str(json).unwrap();
+        assert_eq!(status.job_id, "abc");
+        assert_eq!(status.status, ReaperJobState::Pending);
+        assert!(status.exit_code.is_none());
+        assert!(status.message.is_none());
+    }
+
+    #[test]
+    fn test_reaper_job_status_succeeded_with_exit_code_zero() {
+        let json = r#"{"job_id": "xyz", "status": "succeeded", "exit_code": 0}"#;
+        let status: ReaperJobStatus = serde_json::from_str(json).unwrap();
+        assert_eq!(status.status, ReaperJobState::Succeeded);
+        assert_eq!(status.exit_code, Some(0));
+    }
 }

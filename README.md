@@ -25,7 +25,7 @@ Wren bridges this gap.
 ## Quick Start
 
 ```yaml
-apiVersion: wren.scops-hpc.com/v1alpha1
+apiVersion: wren.giar.dev/v1alpha1
 kind: MPIJob
 metadata:
   name: my-simulation

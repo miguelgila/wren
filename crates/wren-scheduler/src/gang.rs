@@ -422,4 +422,115 @@ mod tests {
         // Must not contain n2 (it would be 3 hops from sw-1 nodes).
         assert!(!placement.nodes.contains(&"n2".to_string()));
     }
+
+    #[test]
+    fn test_single_node_schedule() {
+        let cluster = make_cluster(vec![
+            make_node("n0", 8000, 16_000_000_000, 0),
+            make_node("n1", 8000, 16_000_000_000, 0),
+        ]);
+
+        let placement =
+            GangScheduler::schedule(&cluster, "single-job", 1, 4000, 8_000_000_000, 0, None)
+                .unwrap();
+        assert_eq!(placement.nodes.len(), 1);
+    }
+
+    #[test]
+    fn test_schedule_with_gpu_requirement() {
+        let cluster = make_cluster(vec![
+            make_node("gpu-node-0", 8000, 16_000_000_000, 4),
+            make_node("gpu-node-1", 8000, 16_000_000_000, 4),
+            make_node("cpu-node-0", 8000, 16_000_000_000, 0),
+        ]);
+
+        let placement =
+            GangScheduler::schedule(&cluster, "gpu-job", 2, 4000, 8_000_000_000, 4, None).unwrap();
+
+        assert_eq!(placement.nodes.len(), 2);
+        // Only gpu nodes have 4 GPUs — cpu-node should not be selected.
+        assert!(!placement.nodes.contains(&"cpu-node-0".to_string()));
+        assert!(placement.nodes.contains(&"gpu-node-0".to_string()));
+        assert!(placement.nodes.contains(&"gpu-node-1".to_string()));
+    }
+
+    #[test]
+    fn test_topology_no_constraint_satisfaction_returns_error() {
+        // All nodes on different switches — prefer_same_switch cannot be satisfied.
+        let cluster = make_cluster(vec![
+            make_node_topo("n0", Some("sw-1"), Some("rack-A")),
+            make_node_topo("n1", Some("sw-2"), Some("rack-B")),
+            make_node_topo("n2", Some("sw-3"), Some("rack-C")),
+        ]);
+
+        let spec = TopologySpec {
+            prefer_same_switch: true,
+            max_hops: None,
+            topology_key: None,
+        };
+
+        let result =
+            GangScheduler::schedule(&cluster, "topo-job", 2, 4000, 8_000_000_000, 0, Some(&spec));
+        assert!(
+            result.is_err(),
+            "should fail when prefer_same_switch cannot be satisfied"
+        );
+    }
+
+    #[test]
+    fn test_generate_candidates_fewer_than_n_returns_empty() {
+        let nodes: Vec<NodeResources> = vec![make_node("n0", 8000, 16_000_000_000, 0)];
+        let refs: Vec<&NodeResources> = nodes.iter().collect();
+        // Request 3 nodes from a 1-node list.
+        let candidates = GangScheduler::generate_candidates(&refs, 3, 10);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_generate_candidates_zero_n_returns_empty_candidate() {
+        let nodes: Vec<NodeResources> = vec![make_node("n0", 8000, 16_000_000_000, 0)];
+        let refs: Vec<&NodeResources> = nodes.iter().collect();
+        let candidates = GangScheduler::generate_candidates(&refs, 0, 10);
+        assert_eq!(candidates, vec![vec![] as Vec<String>]);
+    }
+
+    #[test]
+    fn test_generate_candidates_respects_max_candidates() {
+        let nodes: Vec<NodeResources> = (0..20)
+            .map(|i| make_node(&format!("n{i}"), 8000, 16_000_000_000, 0))
+            .collect();
+        let refs: Vec<&NodeResources> = nodes.iter().collect();
+        let candidates = GangScheduler::generate_candidates(&refs, 2, 5);
+        assert!(
+            candidates.len() <= 5,
+            "should not exceed max_candidates, got {}",
+            candidates.len()
+        );
+    }
+
+    #[test]
+    fn test_generate_candidates_exact_fit() {
+        let nodes: Vec<NodeResources> = vec![
+            make_node("n0", 8000, 16_000_000_000, 0),
+            make_node("n1", 8000, 16_000_000_000, 0),
+        ];
+        let refs: Vec<&NodeResources> = nodes.iter().collect();
+        let candidates = GangScheduler::generate_candidates(&refs, 2, 10);
+        // Exactly one candidate: [n0, n1].
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0], vec!["n0".to_string(), "n1".to_string()]);
+    }
+
+    #[test]
+    fn test_schedule_all_nodes_fully_allocated_returns_error() {
+        let mut cluster = make_cluster(vec![
+            make_node("n0", 8000, 16_000_000_000, 0),
+            make_node("n1", 8000, 16_000_000_000, 0),
+        ]);
+        cluster.allocate("n0", 8000, 0, 0, "blocker");
+        cluster.allocate("n1", 8000, 0, 0, "blocker");
+
+        let result = GangScheduler::schedule(&cluster, "new-job", 1, 4000, 8_000_000_000, 0, None);
+        assert!(result.is_err());
+    }
 }

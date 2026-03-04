@@ -692,4 +692,171 @@ mod tests {
         let n1 = &decisions[1].placement.nodes[0];
         assert_ne!(n0, n1);
     }
+
+    #[test]
+    fn test_running_job_estimated_end_with_walltime() {
+        let now = Utc::now();
+        let job = RunningJobInfo {
+            name: "j".to_string(),
+            nodes: vec!["n0".to_string()],
+            cpu_per_node_millis: 2000,
+            memory_per_node_bytes: 4_000_000_000,
+            gpus_per_node: 0,
+            started_at: now,
+            walltime: Some(WalltimeDuration { seconds: 3600 }),
+        };
+        let end = job.estimated_end().unwrap();
+        let expected = now + chrono::Duration::seconds(3600);
+        assert!((end - expected).num_seconds().abs() < 2);
+    }
+
+    #[test]
+    fn test_running_job_estimated_end_without_walltime() {
+        let job = RunningJobInfo {
+            name: "j".to_string(),
+            nodes: vec!["n0".to_string()],
+            cpu_per_node_millis: 2000,
+            memory_per_node_bytes: 4_000_000_000,
+            gpus_per_node: 0,
+            started_at: Utc::now(),
+            walltime: None,
+        };
+        assert!(job.estimated_end().is_none());
+    }
+
+    #[test]
+    fn test_available_at_unknown_node_returns_zeros() {
+        let c = cluster(vec![node("n0", 8000, 16_000_000_000, 0)]);
+        let tl = BackfillScheduler::build_timeline(&c, &[], Utc::now());
+        let (cpu, mem, gpu) = tl.available_at("nonexistent", &c, Utc::now());
+        assert_eq!(cpu, 0);
+        assert_eq!(mem, 0);
+        assert_eq!(gpu, 0);
+    }
+
+    #[test]
+    fn test_earliest_start_immediate_when_resources_available() {
+        let c = cluster(vec![
+            node("n0", 8000, 16_000_000_000, 0),
+            node("n1", 8000, 16_000_000_000, 0),
+        ]);
+        let now = Utc::now();
+        let tl = BackfillScheduler::build_timeline(&c, &[], now);
+
+        let start = tl.earliest_start(
+            &c,
+            2,
+            4000,
+            8_000_000_000,
+            0,
+            now,
+            Duration::from_secs(3600),
+        );
+        assert!(start.is_some());
+        // Should start immediately (at `now`).
+        let t = start.unwrap();
+        assert!((t - now).num_seconds().abs() < 2);
+    }
+
+    #[test]
+    fn test_earliest_start_returns_none_when_never_feasible() {
+        // Cluster has only 1 node; job needs 3.
+        let c = cluster(vec![node("n0", 8000, 16_000_000_000, 0)]);
+        let now = Utc::now();
+        let tl = BackfillScheduler::build_timeline(&c, &[], now);
+
+        let start = tl.earliest_start(
+            &c,
+            3,
+            4000,
+            8_000_000_000,
+            0,
+            now,
+            Duration::from_secs(3600),
+        );
+        assert!(start.is_none());
+    }
+
+    #[test]
+    fn test_earliest_start_after_job_completes() {
+        // n0 has 8000m CPU total; a running job consumes all 8000m and finishes in 30s.
+        let mut c = cluster(vec![node("n0", 8000, 16_000_000_000, 0)]);
+        c.allocate("n0", 8000, 16_000_000_000, 0, "blocker");
+
+        // The running job helper sets cpu_per_node_millis = 2000 by default.
+        // We need the release event to free the full 8000m, so build RunningJobInfo directly.
+        let jobs = vec![RunningJobInfo {
+            name: "blocker".to_string(),
+            nodes: vec!["n0".to_string()],
+            cpu_per_node_millis: 8000,
+            memory_per_node_bytes: 16_000_000_000,
+            gpus_per_node: 0,
+            started_at: Utc::now() - chrono::Duration::seconds(30),
+            walltime: Some(WalltimeDuration { seconds: 60 }),
+        }];
+        let now = Utc::now();
+        let tl = BackfillScheduler::build_timeline(&c, &jobs, now);
+
+        // Request 1 node with 8000m CPU — not available now (0m free) but
+        // will be in ~30s when the blocker finishes.
+        let start = tl.earliest_start(&c, 1, 8000, 0, 0, now, Duration::from_secs(120));
+        assert!(
+            start.is_some(),
+            "should find a start time once blocker completes"
+        );
+        // The found start should be in the future (after the release event).
+        assert!(start.unwrap() > now);
+    }
+
+    #[test]
+    fn test_backfill_decision_fields() {
+        let c = cluster(vec![node("n0", 8000, 16_000_000_000, 0)]);
+        let high = queued_job("high", 100, 2, Some(3600)); // blocked
+        let low = queued_job("low", 10, 1, Some(1800));
+        let pending: Vec<&QueuedJob> = vec![&high, &low];
+
+        let decisions = BackfillScheduler::find_backfill_candidates(
+            &c,
+            &[],
+            &pending,
+            Duration::from_secs(7200),
+            Utc::now(),
+        );
+
+        assert_eq!(decisions.len(), 1);
+        let d = &decisions[0];
+        assert_eq!(d.job_name, "low");
+        assert!(d.safe_to_backfill);
+        assert_eq!(d.placement.nodes.len(), 1);
+        assert_eq!(d.placement.nodes[0], "n0");
+    }
+
+    #[test]
+    fn test_build_timeline_multiple_nodes() {
+        let c = cluster(vec![
+            node("n0", 8000, 16_000_000_000, 0),
+            node("n1", 8000, 16_000_000_000, 0),
+        ]);
+        // A job running on both n0 and n1.
+        let jobs = vec![running_job("j1", &["n0", "n1"], 10, Some(60))];
+        let tl = BackfillScheduler::build_timeline(&c, &jobs, Utc::now());
+
+        assert!(tl.node_timelines.contains_key("n0"));
+        assert!(tl.node_timelines.contains_key("n1"));
+        assert_eq!(tl.node_timelines["n0"].events.len(), 1);
+        assert_eq!(tl.node_timelines["n1"].events.len(), 1);
+    }
+
+    #[test]
+    fn test_safe_to_backfill_completion_exactly_at_reservation() {
+        // Completion == reservation_start should be safe (<=).
+        let job = queued_job("j", 10, 1, Some(3600)); // 1h walltime
+        let now = Utc::now();
+        let reservation = Some(now + chrono::Duration::seconds(3600));
+        assert!(BackfillScheduler::is_safe_to_backfill(
+            &job,
+            now,
+            reservation
+        ));
+    }
 }

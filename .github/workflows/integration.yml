@@ -27,23 +27,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl-tools
+        run: sudo apt-get install -y musl-tools
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
-      - name: Build (release)
-        run: cargo build --workspace --release
+            ${{ runner.os }}-cargo-musl-
+      - name: Build (release, musl)
+        run: cargo build --workspace --release --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@v4
         with:
           name: release-binaries
           path: |
-            target/release/wren-controller
-            target/release/wren
+            target/x86_64-unknown-linux-musl/release/wren-controller
+            target/x86_64-unknown-linux-musl/release/wren
           retention-days: 1
 
   kind-integration:
@@ -56,9 +60,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-binaries
-          path: target/release/
+          path: target/x86_64-unknown-linux-musl/release/
       - name: Make binaries executable
-        run: chmod +x target/release/wren-controller target/release/wren
+        run: chmod +x target/x86_64-unknown-linux-musl/release/wren-controller target/x86_64-unknown-linux-musl/release/wren
       - name: Install kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
@@ -71,7 +75,7 @@ jobs:
           sudo mv kubectl /usr/local/bin/kubectl
       - name: Build Docker image (using pre-built binary)
         run: |
-          cp target/release/wren-controller docker/
+          cp target/x86_64-unknown-linux-musl/release/wren-controller docker/
           docker build -f docker/Dockerfile.controller --target runtime-prebuilt -t wren-controller:latest docker/
           rm docker/wren-controller
       - name: Run integration tests

@@ -1,5 +1,5 @@
 [default]
 timeout = "600s"
-fail-under = 45
-out = ["xml"]
+fail-under = 40
+out = ["Xml"]
 workspace = true

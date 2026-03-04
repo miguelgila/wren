@@ -1,8 +1,8 @@
 # Topology-aware placement: prefer nodes on the same network switch.
 # On the kind test cluster, nodes are labeled with:
-#   topology.wren.io/switch: switch-0 | switch-1
-#   topology.wren.io/rack:   rack-0   | rack-1
-apiVersion: wren.scops-hpc.com/v1alpha1
+#   topology.wren.giar.dev/switch: switch-0 | switch-1
+#   topology.wren.giar.dev/rack:   rack-0   | rack-1
+apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: topology-aware-job

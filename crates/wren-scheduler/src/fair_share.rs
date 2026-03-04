@@ -567,4 +567,140 @@ mod tests {
         assert_eq!(summary[1].0, "bob");
         assert_eq!(summary[2].0, "charlie");
     }
+
+    // --- Additional coverage ---
+
+    #[test]
+    fn test_fair_share_weights_equal() {
+        let w = FairShareWeights::equal();
+        assert!((w.age - 0.333).abs() < 1e-3);
+        assert!((w.size - 0.333).abs() < 1e-3);
+        assert!((w.fair_share - 0.333).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_fair_share_factor_clamped_at_negative_one() {
+        // One user has consumed 100% of all resources — factor should clamp near -1.
+        let mut mgr = manager();
+        // alice: 0, bob: 10000
+        mgr.record_usage("alice", 0.0, 0.0);
+        mgr.record_usage("bob", 10000.0, 0.0);
+
+        let fb = mgr.fair_share_factor("bob");
+        assert!(fb >= -1.0, "factor must not go below -1.0, got {fb}");
+        assert!(fb < 0.0, "heavy user should have negative factor, got {fb}");
+    }
+
+    #[test]
+    fn test_fair_share_factor_clamped_at_positive_one() {
+        // alice has 0 usage while others have high usage.
+        let mut mgr = manager();
+        mgr.record_usage("alice", 0.0, 0.0);
+        mgr.record_usage("bob", 10000.0, 0.0);
+
+        let fa = mgr.fair_share_factor("alice");
+        assert!(fa <= 1.0, "factor must not exceed 1.0, got {fa}");
+        assert!(fa > 0.0, "light user should have positive factor, got {fa}");
+    }
+
+    #[test]
+    fn test_effective_priority_increases_with_age() {
+        let mgr = FairShareManager::new(
+            Duration::days(7),
+            FairShareWeights {
+                age: 1.0,
+                size: 0.0,
+                fair_share: 0.0,
+            },
+        );
+
+        let fresh_job = make_job("fresh", "alice", 50, 1, 0);
+        let old_job = make_job("old", "alice", 50, 1, 3600); // waited 1h
+
+        let ep_fresh = mgr.effective_priority(&fresh_job);
+        let ep_old = mgr.effective_priority(&old_job);
+
+        assert!(
+            ep_old > ep_fresh,
+            "older job should have higher effective priority: old={ep_old}, fresh={ep_fresh}"
+        );
+    }
+
+    #[test]
+    fn test_effective_priority_smaller_job_higher_size_factor() {
+        let mgr = FairShareManager::new(
+            Duration::days(7),
+            FairShareWeights {
+                age: 0.0,
+                size: 1.0,
+                fair_share: 0.0,
+            },
+        );
+
+        let small_job = make_job("small", "alice", 50, 1, 0);
+        let large_job = make_job("large", "alice", 50, 64, 0);
+
+        let ep_small = mgr.effective_priority(&small_job);
+        let ep_large = mgr.effective_priority(&large_job);
+
+        assert!(
+            ep_small > ep_large,
+            "smaller job should get higher priority: small={ep_small}, large={ep_large}"
+        );
+    }
+
+    #[test]
+    fn test_record_usage_gpu_seconds_tracked() {
+        let mut mgr = manager();
+        mgr.record_usage("alice", 0.0, 7200.0); // 2h GPU-seconds
+
+        let summary = mgr.usage_summary();
+        assert_eq!(summary.len(), 1);
+        let (_, ns, gs) = &summary[0];
+        assert!((ns - 0.0).abs() < 1e-6);
+        assert!((gs - 7200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_usage_summary_empty_returns_empty() {
+        let mgr = manager();
+        assert!(mgr.usage_summary().is_empty());
+    }
+
+    #[test]
+    fn test_sort_by_effective_priority_empty_slice() {
+        let mgr = manager();
+        let mut jobs: Vec<wren_core::QueuedJob> = vec![];
+        // Should not panic.
+        mgr.sort_by_effective_priority(&mut jobs);
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn test_sort_by_effective_priority_single_job() {
+        let mgr = manager();
+        let mut jobs = vec![make_job("solo", "alice", 100, 1, 0)];
+        mgr.sort_by_effective_priority(&mut jobs);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "solo");
+    }
+
+    #[test]
+    fn test_decay_usage_empty_manager_does_not_panic() {
+        let mut mgr = manager();
+        // No usage records — decay should be a no-op.
+        mgr.decay_usage();
+    }
+
+    #[test]
+    fn test_fair_share_factor_all_zero_usage_returns_zero() {
+        let mut mgr = manager();
+        // Both users recorded 0.0 node-seconds.
+        mgr.record_usage("alice", 0.0, 0.0);
+        mgr.record_usage("bob", 0.0, 0.0);
+
+        // total_node_seconds == 0 → return 0.0.
+        assert_eq!(mgr.fair_share_factor("alice"), 0.0);
+        assert_eq!(mgr.fair_share_factor("bob"), 0.0);
+    }
 }

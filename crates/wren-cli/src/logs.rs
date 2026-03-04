@@ -6,6 +6,14 @@ use kube::{
 };
 use tracing::debug;
 
+/// Build a Kubernetes label selector string for fetching job pods.
+pub(crate) fn build_label_selector(job: &str, rank: Option<u32>) -> String {
+    match rank {
+        Some(r) => format!("wren.giar.dev/job-name={job},wren.giar.dev/rank={r}"),
+        None => format!("wren.giar.dev/job-name={job}"),
+    }
+}
+
 /// Fetch logs from pods belonging to a WrenJob, with optional rank and follow support.
 pub async fn run(job: &str, rank: Option<u32>, follow: bool, namespace: &str) -> Result<()> {
     let client = Client::try_default()
@@ -14,10 +22,7 @@ pub async fn run(job: &str, rank: Option<u32>, follow: bool, namespace: &str) ->
 
     let pods: Api<Pod> = Api::namespaced(client, namespace);
 
-    let label_selector = match rank {
-        Some(r) => format!("wren.io/job-name={job},wren.io/rank={r}"),
-        None => format!("wren.io/job-name={job}"),
-    };
+    let label_selector = build_label_selector(job, rank);
 
     let lp = ListParams::default().labels(&label_selector);
     let pod_list = pods
@@ -62,4 +67,33 @@ pub async fn run(job: &str, rank: Option<u32>, follow: bool, namespace: &str) ->
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_label_selector_no_rank() {
+        let sel = build_label_selector("my-job", None);
+        assert_eq!(sel, "wren.giar.dev/job-name=my-job");
+    }
+
+    #[test]
+    fn test_build_label_selector_with_rank_zero() {
+        let sel = build_label_selector("my-job", Some(0));
+        assert_eq!(sel, "wren.giar.dev/job-name=my-job,wren.giar.dev/rank=0");
+    }
+
+    #[test]
+    fn test_build_label_selector_with_rank() {
+        let sel = build_label_selector("my-job", Some(5));
+        assert_eq!(sel, "wren.giar.dev/job-name=my-job,wren.giar.dev/rank=5");
+    }
+
+    #[test]
+    fn test_build_label_selector_special_chars_in_name() {
+        let sel = build_label_selector("my-complex-job-123", None);
+        assert_eq!(sel, "wren.giar.dev/job-name=my-complex-job-123");
+    }
 }
