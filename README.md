@@ -41,7 +41,24 @@ Wren bridges this gap.
 
 ## Quick Start
 
-### 1. Install CRDs and Deploy the Controller
+### 1. Spin Up a Playground Cluster
+
+If you don't have a Kubernetes cluster available, the quickstart script creates a local [Kind](https://kind.sigs.k8s.io/) cluster with topology-labeled workers, installs CRDs, builds and deploys the controller, and runs all example jobs:
+
+```bash
+./examples/quickstart.sh
+```
+
+To reuse an existing cluster or tear it down:
+
+```bash
+./examples/quickstart.sh --no-cluster   # Skip cluster creation
+./examples/quickstart.sh --cleanup      # Delete the Kind cluster
+```
+
+If you already have a cluster and prefer to set things up manually, continue with the steps below.
+
+### 2. Install CRDs and Deploy the Controller
 
 **Using Helm (recommended):**
 
@@ -57,7 +74,7 @@ kubectl apply -f manifests/rbac/
 kubectl apply -f manifests/deployment.yaml
 ```
 
-### 2. Create a Queue
+### 3. Create a Queue
 
 ```yaml
 apiVersion: wren.giar.dev/v1alpha1
@@ -77,7 +94,7 @@ spec:
 kubectl apply -f queue.yaml
 ```
 
-### 3. Submit a Job
+### 4. Submit a Job
 
 Create a `WrenJob` — the primary user-facing CRD (equivalent to Slurm's `sbatch`):
 
@@ -122,7 +139,7 @@ wren logs my-simulation --rank 0
 wren cancel my-simulation
 ```
 
-### 4. Simple (Non-MPI) Jobs
+### 5. Simple (Non-MPI) Jobs
 
 For single-node or non-MPI workloads, just omit the `mpi` section. Wren runs the command directly without a launcher/worker pattern:
 
