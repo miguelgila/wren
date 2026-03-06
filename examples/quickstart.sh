@@ -150,16 +150,39 @@ if [ "$BUILD_MODE" = "dev" ]; then
         SKIP_CONTROLLER=true
     fi
 else
-    CONTROLLER_IMAGE="${GHCR_IMAGE}:${RELEASE_TAG}"
-    info "Pulling controller image ${CONTROLLER_IMAGE}..."
-    if docker pull "$CONTROLLER_IMAGE"; then
-        ok "Image pulled: $CONTROLLER_IMAGE"
-        info "Loading image into kind cluster..."
-        kind load docker-image "$CONTROLLER_IMAGE" --name "$CLUSTER_NAME"
-        ok "Image loaded into cluster"
+    # GHCR images are amd64-only; detect arch mismatch and fall back to --dev
+    HOST_ARCH="$(docker info --format '{{.Architecture}}' 2>/dev/null || uname -m)"
+    if [[ "$HOST_ARCH" != "x86_64" && "$HOST_ARCH" != "amd64" ]]; then
+        warn "Pre-built GHCR image is amd64-only, but this machine is $HOST_ARCH."
+        warn "Falling back to building from source (--dev mode)."
+        if command -v cargo &>/dev/null; then
+            BUILD_MODE="dev"
+            info "Building controller Docker image from source..."
+            if docker build -f "$ROOT_DIR/docker/Dockerfile.controller" -t "$CONTROLLER_IMAGE" "$ROOT_DIR" 2>/dev/null; then
+                ok "Image built: $CONTROLLER_IMAGE"
+                info "Loading image into kind cluster..."
+                kind load docker-image "$CONTROLLER_IMAGE" --name "$CLUSTER_NAME"
+                ok "Image loaded into cluster"
+            else
+                warn "Docker build failed. Skipping controller deployment."
+                SKIP_CONTROLLER=true
+            fi
+        else
+            fail "cargo is required to build from source on $HOST_ARCH. Install Rust or use an amd64 machine."
+            exit 1
+        fi
     else
-        fail "Failed to pull $CONTROLLER_IMAGE. Check the version tag exists on GHCR."
-        exit 1
+        CONTROLLER_IMAGE="${GHCR_IMAGE}:${RELEASE_TAG}"
+        info "Pulling controller image ${CONTROLLER_IMAGE}..."
+        if docker pull "$CONTROLLER_IMAGE"; then
+            ok "Image pulled: $CONTROLLER_IMAGE"
+            info "Loading image into kind cluster..."
+            kind load docker-image "$CONTROLLER_IMAGE" --name "$CLUSTER_NAME"
+            ok "Image loaded into cluster"
+        else
+            fail "Failed to pull $CONTROLLER_IMAGE. Check the version tag exists on GHCR."
+            exit 1
+        fi
     fi
 fi
 
