@@ -52,7 +52,7 @@ If you don't have a Kubernetes cluster available, the quickstart script creates 
 Options:
 
 ```bash
-./examples/quickstart.sh --release 0.2.1  # Use a specific release version
+./examples/quickstart.sh --release 0.3.0  # Use a specific release version
 ./examples/quickstart.sh --dev            # Build controller from source
 ./examples/quickstart.sh --no-cluster     # Skip cluster creation (reuse existing)
 ./examples/quickstart.sh --cleanup        # Delete the Kind cluster

@@ -12,6 +12,7 @@
 set -euo pipefail
 
 CLUSTER_NAME="wren-test"
+KUBE_CONTEXT="kind-${CLUSTER_NAME}"
 GHCR_IMAGE="ghcr.io/miguelgila/wren-controller"
 CONTROLLER_IMAGE="wren-controller:dev"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -115,23 +116,23 @@ else
     fi
 fi
 
-# Point kubectl at the kind cluster
-kubectl cluster-info --context "kind-${CLUSTER_NAME}" &>/dev/null || {
+# Verify the kind cluster is reachable (without changing default context)
+kubectl cluster-info --context "$KUBE_CONTEXT" &>/dev/null || {
     fail "Cannot reach cluster. Is kind running?"
     exit 1
 }
-ok "Cluster is reachable"
+ok "Cluster is reachable (context: $KUBE_CONTEXT)"
 
 # ---------------------------------------------------------------------------
 # Step 2: Install CRDs
 # ---------------------------------------------------------------------------
 info "Installing CRDs..."
-kubectl apply -f "$ROOT_DIR/manifests/crds/"
+kubectl --context "$KUBE_CONTEXT" apply -f "$ROOT_DIR/manifests/crds/"
 ok "CRDs installed"
 
 # Verify
-kubectl get crd wrenjobs.wren.giar.dev &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
-kubectl get crd wrenqueues.wren.giar.dev &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
+kubectl --context "$KUBE_CONTEXT" get crd wrenjobs.wren.giar.dev &>/dev/null && ok "  WrenJob CRD registered" || fail "  WrenJob CRD missing"
+kubectl --context "$KUBE_CONTEXT" get crd wrenqueues.wren.giar.dev &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
 
 # ---------------------------------------------------------------------------
 # Step 3: Get controller image
@@ -167,19 +168,17 @@ fi
 # ---------------------------------------------------------------------------
 if [ "${SKIP_CONTROLLER:-false}" != "true" ]; then
     info "Deploying controller..."
-    # Ensure namespace exists before creating namespaced resources
-    kubectl create namespace wren-system 2>/dev/null || true
-    kubectl apply -f "$ROOT_DIR/manifests/rbac/rbac.yaml"
-    kubectl apply -f "$ROOT_DIR/manifests/deployment.yaml"
+    kubectl --context "$KUBE_CONTEXT" apply -f "$ROOT_DIR/manifests/rbac/rbac.yaml"
+    kubectl --context "$KUBE_CONTEXT" apply -f "$ROOT_DIR/manifests/deployment.yaml"
 
     # Patch the image if using a release build
     if [ "$BUILD_MODE" != "dev" ]; then
-        kubectl set image deployment/wren-controller \
+        kubectl --context "$KUBE_CONTEXT" set image deployment/wren-controller \
             controller="$CONTROLLER_IMAGE" -n wren-system
     fi
 
     info "Waiting for controller to be ready..."
-    if kubectl wait --for=condition=available deployment/wren-controller \
+    if kubectl --context "$KUBE_CONTEXT" wait --for=condition=available deployment/wren-controller \
         -n wren-system --timeout=90s 2>/dev/null; then
         ok "Controller is running"
     else
@@ -198,7 +197,7 @@ echo ""
 
 # --- Example 1: Hello World ---
 info "Example 1: Hello World (single-node job)"
-kubectl apply -f "$SCRIPT_DIR/01-hello-world/job.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/01-hello-world/job.yaml"
 ok "Created: hello-wren"
 echo "  Check status:  kubectl get wrenjob hello-wren -o wide"
 echo "  Watch:         kubectl get wrenjob hello-wren -w"
@@ -208,7 +207,7 @@ sleep 2
 
 # --- Example 2: Multi-node ---
 info "Example 2: Multi-node job (2 workers, gang scheduled)"
-kubectl apply -f "$SCRIPT_DIR/02-multi-node/job.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/02-multi-node/job.yaml"
 ok "Created: multi-node-demo"
 echo "  Check pods:    kubectl get pods -l wren.giar.dev/job-name=multi-node-demo"
 echo "  Check service: kubectl get svc multi-node-demo-workers"
@@ -218,8 +217,8 @@ sleep 2
 
 # --- Example 3: Queues ---
 info "Example 3: Queue with policies"
-kubectl apply -f "$SCRIPT_DIR/03-queues/queue.yaml"
-kubectl apply -f "$SCRIPT_DIR/03-queues/job.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/03-queues/queue.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/03-queues/job.yaml"
 ok "Created: batch queue + batch-job"
 echo "  List queues:   kubectl get wrenqueues"
 echo "  Queue detail:  kubectl get wrenqueue batch -o yaml"
@@ -229,9 +228,9 @@ sleep 2
 
 # --- Example 4: Topology ---
 info "Example 4: Topology-aware placement"
-kubectl apply -f "$SCRIPT_DIR/04-topology/job.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/04-topology/job.yaml"
 ok "Created: topology-aware-job"
-echo "  Check nodes:   kubectl get nodes --show-labels | grep topology.wren.io"
+echo "  Check nodes:   kubectl get nodes --show-labels | grep topology.wren.giar.dev"
 echo "  Check status:  kubectl get wrenjob topology-aware-job -o yaml"
 echo ""
 
@@ -239,10 +238,20 @@ sleep 2
 
 # --- Example 5: Priority ---
 info "Example 5: Priority scheduling"
-kubectl apply -f "$SCRIPT_DIR/05-priority/low-priority.yaml"
-kubectl apply -f "$SCRIPT_DIR/05-priority/high-priority.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/05-priority/low-priority.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/05-priority/high-priority.yaml"
 ok "Created: low-priority-job + high-priority-job"
 echo "  List all jobs: kubectl get wrenjobs"
+echo ""
+
+sleep 2
+
+# --- Example 6: Dependencies ---
+info "Example 6: Job dependencies (preprocess → train → evaluate)"
+kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/06-dependencies/pipeline.yaml"
+ok "Created: preprocess + train + evaluate (dependency chain)"
+echo "  List all jobs: kubectl get wrenjobs"
+echo "  NOTE: Dependencies are defined in the CRD but not yet reconciled."
 echo ""
 
 # ---------------------------------------------------------------------------
