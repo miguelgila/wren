@@ -49,11 +49,13 @@ If you don't have a Kubernetes cluster available, the quickstart script creates 
 ./examples/quickstart.sh
 ```
 
-To reuse an existing cluster or tear it down:
+Options:
 
 ```bash
-./examples/quickstart.sh --no-cluster   # Skip cluster creation
-./examples/quickstart.sh --cleanup      # Delete the Kind cluster
+./examples/quickstart.sh --release 0.2.1  # Use a specific release version
+./examples/quickstart.sh --dev            # Build controller from source
+./examples/quickstart.sh --no-cluster     # Skip cluster creation (reuse existing)
+./examples/quickstart.sh --cleanup        # Delete the Kind cluster
 ```
 
 If you already have a cluster and prefer to set things up manually, continue with the steps below.

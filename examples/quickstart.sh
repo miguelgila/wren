@@ -3,13 +3,16 @@
 # Wren Quickstart — spin up a local cluster and run example jobs.
 #
 # Usage:
-#   ./examples/quickstart.sh              # Full setup + run examples
-#   ./examples/quickstart.sh --no-cluster # Skip cluster creation (reuse existing)
-#   ./examples/quickstart.sh --cleanup    # Tear down the cluster
+#   ./examples/quickstart.sh                  # Full setup using GHCR latest image
+#   ./examples/quickstart.sh --release 0.2.1  # Use a specific release version
+#   ./examples/quickstart.sh --dev            # Build controller from source
+#   ./examples/quickstart.sh --no-cluster     # Skip cluster creation (reuse existing)
+#   ./examples/quickstart.sh --cleanup        # Tear down the cluster
 # =============================================================================
 set -euo pipefail
 
 CLUSTER_NAME="wren-test"
+GHCR_IMAGE="ghcr.io/miguelgila/wren-controller"
 CONTROLLER_IMAGE="wren-controller:dev"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -31,19 +34,37 @@ fail()  { echo -e "${RED}[FAIL]${NC}  $*"; }
 # ---------------------------------------------------------------------------
 SKIP_CLUSTER=false
 CLEANUP_ONLY=false
+BUILD_MODE="release"
+RELEASE_TAG="latest"
 
 for arg in "$@"; do
     case "$arg" in
         --no-cluster) SKIP_CLUSTER=true ;;
         --cleanup)    CLEANUP_ONLY=true ;;
+        --dev)        BUILD_MODE="dev" ;;
+        --release)    BUILD_MODE="release" ;;  # next positional arg handled below
         --help|-h)
-            echo "Usage: $0 [--no-cluster] [--cleanup]"
+            echo "Usage: $0 [--no-cluster] [--cleanup] [--dev] [--release [VERSION]]"
             echo ""
-            echo "  --no-cluster  Skip kind cluster creation (reuse existing)"
-            echo "  --cleanup     Delete the kind cluster and exit"
+            echo "  --no-cluster       Skip kind cluster creation (reuse existing)"
+            echo "  --cleanup          Delete the kind cluster and exit"
+            echo "  --dev              Build controller from source (requires cargo)"
+            echo "  --release [VERSION] Pull pre-built image from GHCR (default: latest)"
             exit 0
             ;;
     esac
+done
+
+# Parse --release VERSION (positional arg after flag)
+for i in $(seq 1 $#); do
+    arg="${!i}"
+    if [ "$arg" = "--release" ]; then
+        next=$((i + 1))
+        next_arg="${!next}"
+        if [ -n "$next_arg" ] && [[ "$next_arg" != --* ]]; then
+            RELEASE_TAG="$next_arg"
+        fi
+    fi
 done
 
 # ---------------------------------------------------------------------------
@@ -60,7 +81,12 @@ fi
 # ---------------------------------------------------------------------------
 info "Checking prerequisites..."
 
-for cmd in kind kubectl docker cargo; do
+REQUIRED_CMDS="kind kubectl docker"
+if [ "$BUILD_MODE" = "dev" ]; then
+    REQUIRED_CMDS="$REQUIRED_CMDS cargo"
+fi
+
+for cmd in $REQUIRED_CMDS; do
     if ! command -v "$cmd" &>/dev/null; then
         fail "'$cmd' is required but not found. Please install it first."
         exit 1
@@ -103,18 +129,32 @@ kubectl get crd wrenjobs.wren.giar.dev &>/dev/null && ok "  WrenJob CRD register
 kubectl get crd wrenqueues.wren.giar.dev &>/dev/null && ok "  WrenQueue CRD registered" || fail "  WrenQueue CRD missing"
 
 # ---------------------------------------------------------------------------
-# Step 3: Build and load controller image
+# Step 3: Get controller image
 # ---------------------------------------------------------------------------
-info "Building controller Docker image..."
-if docker build -f "$ROOT_DIR/docker/Dockerfile.controller" -t "$CONTROLLER_IMAGE" "$ROOT_DIR" 2>/dev/null; then
-    ok "Image built: $CONTROLLER_IMAGE"
-    info "Loading image into kind cluster..."
-    kind load docker-image "$CONTROLLER_IMAGE" --name "$CLUSTER_NAME"
-    ok "Image loaded into cluster"
+if [ "$BUILD_MODE" = "dev" ]; then
+    info "Building controller Docker image from source..."
+    if docker build -f "$ROOT_DIR/docker/Dockerfile.controller" -t "$CONTROLLER_IMAGE" "$ROOT_DIR" 2>/dev/null; then
+        ok "Image built: $CONTROLLER_IMAGE"
+        info "Loading image into kind cluster..."
+        kind load docker-image "$CONTROLLER_IMAGE" --name "$CLUSTER_NAME"
+        ok "Image loaded into cluster"
+    else
+        warn "Docker build failed (disk space?). Skipping controller deployment."
+        warn "You can still create CRD objects — they just won't be reconciled."
+        SKIP_CONTROLLER=true
+    fi
 else
-    warn "Docker build failed (disk space?). Skipping controller deployment."
-    warn "You can still create CRD objects — they just won't be reconciled."
-    SKIP_CONTROLLER=true
+    CONTROLLER_IMAGE="${GHCR_IMAGE}:${RELEASE_TAG}"
+    info "Pulling controller image ${CONTROLLER_IMAGE}..."
+    if docker pull "$CONTROLLER_IMAGE"; then
+        ok "Image pulled: $CONTROLLER_IMAGE"
+        info "Loading image into kind cluster..."
+        kind load docker-image "$CONTROLLER_IMAGE" --name "$CLUSTER_NAME"
+        ok "Image loaded into cluster"
+    else
+        fail "Failed to pull $CONTROLLER_IMAGE. Check the version tag exists on GHCR."
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -122,8 +162,16 @@ fi
 # ---------------------------------------------------------------------------
 if [ "${SKIP_CONTROLLER:-false}" != "true" ]; then
     info "Deploying controller..."
+    # Ensure namespace exists before creating namespaced resources
+    kubectl create namespace wren-system 2>/dev/null || true
     kubectl apply -f "$ROOT_DIR/manifests/rbac/rbac.yaml"
     kubectl apply -f "$ROOT_DIR/manifests/deployment.yaml"
+
+    # Patch the image if using a release build
+    if [ "$BUILD_MODE" != "dev" ]; then
+        kubectl set image deployment/wren-controller \
+            controller="$CONTROLLER_IMAGE" -n wren-system
+    fi
 
     info "Waiting for controller to be ready..."
     if kubectl wait --for=condition=available deployment/wren-controller \
