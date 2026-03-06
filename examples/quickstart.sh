@@ -37,34 +37,39 @@ CLEANUP_ONLY=false
 BUILD_MODE="release"
 RELEASE_TAG="latest"
 
-for arg in "$@"; do
-    case "$arg" in
+usage() {
+    echo "Usage: $0 [--no-cluster] [--cleanup] [--dev] [--release [VERSION]]"
+    echo ""
+    echo "  --no-cluster        Skip kind cluster creation (reuse existing)"
+    echo "  --cleanup           Delete the kind cluster and exit"
+    echo "  --dev               Build controller from source (requires cargo)"
+    echo "  --release [VERSION] Pull pre-built image from GHCR (default: latest)"
+    echo "  -h, --help          Show this help message"
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
         --no-cluster) SKIP_CLUSTER=true ;;
         --cleanup)    CLEANUP_ONLY=true ;;
         --dev)        BUILD_MODE="dev" ;;
-        --release)    BUILD_MODE="release" ;;  # next positional arg handled below
+        --release)
+            BUILD_MODE="release"
+            if [ $# -ge 2 ] && [[ "$2" != --* ]]; then
+                RELEASE_TAG="$2"
+                shift
+            fi
+            ;;
         --help|-h)
-            echo "Usage: $0 [--no-cluster] [--cleanup] [--dev] [--release [VERSION]]"
-            echo ""
-            echo "  --no-cluster       Skip kind cluster creation (reuse existing)"
-            echo "  --cleanup          Delete the kind cluster and exit"
-            echo "  --dev              Build controller from source (requires cargo)"
-            echo "  --release [VERSION] Pull pre-built image from GHCR (default: latest)"
+            usage
             exit 0
             ;;
+        *)
+            fail "Unknown option: $1"
+            usage
+            exit 1
+            ;;
     esac
-done
-
-# Parse --release VERSION (positional arg after flag)
-for i in $(seq 1 $#); do
-    arg="${!i}"
-    if [ "$arg" = "--release" ]; then
-        next=$((i + 1))
-        next_arg="${!next}"
-        if [ -n "$next_arg" ] && [[ "$next_arg" != --* ]]; then
-            RELEASE_TAG="$next_arg"
-        fi
-    fi
+    shift
 done
 
 # ---------------------------------------------------------------------------
