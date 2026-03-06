@@ -79,7 +79,7 @@ wren/
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── crd.rs         # MPIJob, PodGroup, Queue CRDs
+│   │       ├── crd.rs         # WrenJob, WrenQueue CRDs
 │   │       ├── types.rs       # Placement, JobStatus, TopologyConstraint
 │   │       ├── backend.rs     # ExecutionBackend trait
 │   │       └── error.rs       # Error types
@@ -90,20 +90,26 @@ wren/
 │   │       ├── lib.rs
 │   │       ├── gang.rs        # Gang scheduling (all-or-nothing placement)
 │   │       ├── topology.rs    # Topology-aware scoring (switch groups, hops)
-│   │       ├── queue.rs       # Priority queue with fair-share
+│   │       ├── queue.rs       # Priority queue
+│   │       ├── queue_manager.rs # Multi-queue management
 │   │       ├── backfill.rs    # Backfill scheduler (Slurm-style)
+│   │       ├── fair_share.rs  # Fair-share priority adjustment
+│   │       ├── dependencies.rs# Job dependencies and job arrays
 │   │       └── resources.rs   # Resource accounting and tracking
 │   │
 │   ├── wren-controller/     # Kubernetes controller (main binary)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs        # Entry point, controller setup
-│   │       ├── reconciler.rs  # MPIJob reconciliation loop
+│   │       ├── reconciler.rs  # WrenJob reconciliation loop
 │   │       ├── node_watcher.rs# Node topology discovery and tracking
 │   │       ├── container.rs   # Container execution backend
 │   │       ├── reaper.rs      # Reaper execution backend
 │   │       ├── mpi.rs         # MPI bootstrap (hostfile, SSH keys, PMIx)
-│   │       └── metrics.rs     # Prometheus metrics endpoint
+│   │       ├── metrics.rs     # Prometheus metrics endpoint
+│   │       ├── reservation.rs # Resource reservation tracking
+│   │       ├── leader_election.rs # HA leader election
+│   │       └── webhook.rs     # Admission webhook validation
 │   │
 │   └── wren-cli/            # CLI tool (wren submit, queue, cancel, etc.)
 │       ├── Cargo.toml
@@ -115,38 +121,45 @@ wren/
 │           ├── status.rs      # wren status <job-id>
 │           └── logs.rs        # wren logs <job-id> [--rank N]
 │
+├── charts/
+│   └── wren/                  # Helm chart
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/         # Deployment, RBAC, CRDs, Service, ServiceMonitor
+│
 ├── manifests/
 │   ├── crds/                  # Generated CRD YAML manifests
-│   │   ├── mpijob.yaml
-│   │   ├── wrenqueue.yaml
-│   │   └── podgroup.yaml
-│   ├── rbac/                  # ServiceAccount, ClusterRole, ClusterRoleBinding
+│   │   ├── wrenjob.yaml
+│   │   └── wrenqueue.yaml
+│   ├── rbac/
+│   │   └── rbac.yaml          # ServiceAccount, ClusterRole, ClusterRoleBinding
 │   ├── deployment.yaml        # Wren controller Deployment
 │   └── examples/
-│       ├── simple-mpi.yaml    # Basic 2-node MPI job
+│       ├── simple-mpi.yaml    # Basic 2-node job
 │       ├── gpu-training.yaml  # Multi-node GPU training job
-│       ├── reaper-job.yaml    # Bare-metal execution via Reaper
-│       └── priority-queues.yaml
+│       └── reaper-job.yaml    # Bare-metal execution via Reaper
 │
 ├── docker/
-│   ├── Dockerfile.controller  # Multi-stage build for the controller
-│   └── Dockerfile.cli         # CLI container image
+│   └── Dockerfile.controller  # Multi-stage build for the controller
 │
-└── docs/
-    ├── architecture.md        # Detailed architecture documentation
-    ├── scheduling.md          # Scheduling algorithms explained
-    ├── mpi-bootstrap.md       # How MPI jobs are bootstrapped
-    ├── reaper-integration.md  # Reaper backend documentation
-    └── migration-from-slurm.md# Guide for Slurm users
+├── scripts/
+│   └── run-integration-tests.sh # Kind cluster integration test runner
+│
+└── .github/workflows/
+    ├── ci.yaml                # Lint, test, Docker build/push, Helm lint
+    ├── integration.yml        # Kind cluster integration tests
+    ├── auto-release.yml       # PR merge → patch bump → tag → release
+    ├── release.yml            # Build static binaries, create GitHub Release
+    └── manual-release.yml     # Manual version bump (patch/minor/major)
 ```
 
 ## CRD Definitions
 
-### MPIJob (primary user-facing CRD)
+### WrenJob (primary user-facing CRD)
 
 ```yaml
 apiVersion: wren.giar.dev/v1alpha1
-kind: MPIJob
+kind: WrenJob
 metadata:
   name: my-simulation
 spec:
@@ -392,7 +405,7 @@ crate handles user identity plumbing.
 - [ ] Comprehensive error handling and retry logic
 - [ ] Graceful degradation when nodes disappear mid-job
 - [x] Webhook validation for WrenJob and WrenQueue CRDs (scaffolded)
-- [ ] Helm chart for deployment
+- [x] Helm chart for deployment (`charts/wren/`)
 - [ ] Comprehensive documentation
 - [ ] Performance benchmarking (scheduling latency at scale)
 - [x] CI/CD pipeline (GitHub Actions: test, lint, build, container image)
@@ -418,7 +431,7 @@ crate handles user identity plumbing.
    separation between container and bare-metal execution. New backends can be added
    without touching scheduling logic.
 
-3. **Single CRD user experience** — users interact with `MPIJob` only. PodGroups
+3. **Single CRD user experience** — users interact with `WrenJob` only. PodGroups
    and internal resources are implementation details managed by the controller.
 
 4. **Hostfile-based MPI bootstrap (v1)** — simpler than PMIx, works with all MPI
@@ -441,7 +454,7 @@ crate handles user identity plumbing.
 
 ### Overview
 
-Integration tests validate the full lifecycle of MPIJobs running against a real
+Integration tests validate the full lifecycle of WrenJobs running against a real
 Kubernetes API. They are split into two tiers:
 
 - **Tier 1 — API-level tests** (run in CI): use a `kind` cluster to test CRD
@@ -464,7 +477,7 @@ Located in `tests/integration/` at the workspace root.
 #### 1.1 CRD Installation
 - [ ] Generate CRD manifests from Rust types (`cargo run --bin crd-gen`)
 - [ ] Apply CRDs to a fresh kind cluster
-- [ ] Verify CRDs are registered: `kubectl get crd mpijobs.wren.giar.dev`
+- [ ] Verify CRDs are registered: `kubectl get crd wrenjobs.wren.giar.dev`
 - [ ] Verify CRDs have correct print columns and status subresource
 
 #### 1.2 Controller Startup
@@ -474,8 +487,8 @@ Located in `tests/integration/` at the workspace root.
 - [ ] Verify `/healthz` and `/readyz` endpoints respond 200
 - [ ] Verify `/metrics` endpoint returns Prometheus metrics
 
-#### 1.3 MPIJob Lifecycle (without real MPI)
-- [ ] Create an MPIJob with `backend: container` and a simple `busybox` image
+#### 1.3 WrenJob Lifecycle (without real MPI)
+- [ ] Create a WrenJob with `backend: container` and a simple `busybox` image
 - [ ] Verify status transitions: `Pending` → `Scheduling` → `Running`
 - [ ] Verify headless Service is created (`<job>-workers`)
 - [ ] Verify hostfile ConfigMap is created with correct content
@@ -490,10 +503,10 @@ Located in `tests/integration/` at the workspace root.
   - [ ] Status updated to `Cancelled`
 
 #### 1.4 Error Handling
-- [ ] Submit MPIJob with 0 nodes → verify immediate `Failed` status
-- [ ] Submit MPIJob without container spec → verify `Failed` with validation message
-- [ ] Submit MPIJob requesting more nodes than available → verify stays in `Scheduling`
-- [ ] Submit MPIJob with walltime "1s" → verify `WalltimeExceeded` after timeout
+- [ ] Submit WrenJob with 0 nodes → verify immediate `Failed` status
+- [ ] Submit WrenJob without container spec → verify `Failed` with validation message
+- [ ] Submit WrenJob requesting more nodes than available → verify stays in `Scheduling`
+- [ ] Submit WrenJob with walltime "1s" → verify `WalltimeExceeded` after timeout
 
 #### 1.5 WrenQueue
 - [ ] Create a WrenQueue CRD
@@ -560,6 +573,6 @@ Create a `tests/common/` module with helpers:
 - `setup_kind_cluster()` — ensure kind cluster is running
 - `install_crds()` — apply CRD manifests
 - `wait_for_status(job_name, expected_state, timeout)` — poll job status
-- `create_mpijob(spec)` — helper to create jobs from Rust code
+- `create_wrenjob(spec)` — helper to create jobs from Rust code
 - `cleanup_job(job_name)` — delete job and all owned resources
 - `assert_pods_with_labels(labels, expected_count)` — verify pod creation
