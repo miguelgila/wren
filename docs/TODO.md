@@ -1,0 +1,2 @@
+ - [ ] wrenCLI: I want to be able to show the logs of a job by using the jobid, and also show extended job details (like sinfo) with it.
+ - [ ] Reaper: Add `uid`/`gid`/`username`/`home_dir` fields to job request. Before exec, use `CommandExt::uid()`/`.gid()` to drop privileges and set `USER`/`HOME`/`LOGNAME` env vars. Reaper stays a dumb executor — no NSS, no LDAP, no PAM. Identity flows from Wren controller via WrenUser CRD.
