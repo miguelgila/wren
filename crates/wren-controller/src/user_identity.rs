@@ -2,7 +2,7 @@ use kube::Api;
 use tracing::{debug, warn};
 use wren_core::{UserIdentity, WrenError, WrenUser};
 
-/// Resolves user identity from the `wren.io/user` annotation by looking up
+/// Resolves user identity from the `wren.giar.dev/user` annotation by looking up
 /// the corresponding WrenUser CRD. Returns None if no annotation is present
 /// or the WrenUser doesn't exist (graceful degradation).
 pub async fn resolve_user_identity(
@@ -17,6 +17,11 @@ pub async fn resolve_user_identity(
     let api: Api<WrenUser> = Api::all(client.clone());
     match api.get_opt(&username).await {
         Ok(Some(wren_user)) => {
+            // Reject uid=0 (root) — jobs must never run as root
+            if wren_user.spec.uid == 0 {
+                warn!(user = %username, "WrenUser has uid=0 (root) — refusing identity");
+                return Ok(None);
+            }
             debug!(user = %username, uid = wren_user.spec.uid, "resolved user identity");
             Ok(Some(UserIdentity {
                 username,
@@ -43,7 +48,7 @@ pub(crate) fn extract_username(
     annotations: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Option<String> {
     annotations
-        .and_then(|a| a.get("wren.io/user"))
+        .and_then(|a| a.get("wren.giar.dev/user"))
         .filter(|u| !u.is_empty())
         .cloned()
 }
@@ -56,14 +61,14 @@ mod tests {
     #[test]
     fn test_extract_username_present() {
         let mut annotations = BTreeMap::new();
-        annotations.insert("wren.io/user".to_string(), "miguel".to_string());
+        annotations.insert("wren.giar.dev/user".to_string(), "miguel".to_string());
         assert_eq!(extract_username(Some(&annotations)), Some("miguel".to_string()));
     }
 
     #[test]
     fn test_extract_username_empty() {
         let mut annotations = BTreeMap::new();
-        annotations.insert("wren.io/user".to_string(), "".to_string());
+        annotations.insert("wren.giar.dev/user".to_string(), "".to_string());
         assert_eq!(extract_username(Some(&annotations)), None);
     }
 

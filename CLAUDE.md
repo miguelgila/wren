@@ -244,7 +244,7 @@ spec:
 apiVersion: wren.giar.dev/v1alpha1
 kind: WrenUser
 metadata:
-  name: miguel              # matches wren.io/user annotation
+  name: miguel              # matches wren.giar.dev/user annotation
 spec:
   uid: 1001                 # Unix UID for process execution
   gid: 1001                 # Primary Unix GID
@@ -371,20 +371,20 @@ UIDs for correct file ownership.
                └────────┬────────┘
                         │ K8s API request
                ┌────────▼────────┐
-  Layer 1:     │ Mutating Webhook │ ← stamps wren.io/user from UserInfo
+  Layer 1:     │ Mutating Webhook │ ← stamps wren.giar.dev/user from UserInfo
                └────────┬────────┘
                         │
                ┌────────▼────────┐
                │ WrenJob CR      │
                │ annotations:    │
-               │   wren.io/user  │
+               │   wren.giar.dev/user  │
                │ spec.project    │
                └────────┬────────┘
                         │
         ┌───────────────▼───────────────┐
         │       Wren Controller         │
         │                               │
-  Layer 2:  lookup wren.io/user         │
+  Layer 2:  lookup wren.giar.dev/user         │
         │       │                       │
         │  ┌────▼─────┐                 │
         │  │ WrenUser  │  ← admin/sync  │
@@ -409,9 +409,9 @@ UIDs for correct file ownership.
 ```
 
 **Layer 1 — Identity Capture (Mutating Webhook):**
-Webhook stamps `wren.io/user` from the K8s API request's `UserInfo`. This is
+Webhook stamps `wren.giar.dev/user` from the K8s API request's `UserInfo`. This is
 tamper-proof — the API server populates `UserInfo` from the auth backend (OIDC,
-x509, ServiceAccount). CLI sets `wren.io/user` as a convenience; webhook always
+x509, ServiceAccount). CLI sets `wren.giar.dev/user` as a convenience; webhook always
 overrides with the real identity.
 
 **Layer 2 — UID Resolution (WrenUser CRD):**
@@ -467,8 +467,8 @@ self-contained change — Reaper stays a dumb executor.
 
 - [ ] Define `WrenUser` CRD in `wren-core/src/crd.rs` (cluster-scoped)
 - [ ] Add `project` field to `WrenJobSpec` (user-settable, for fair-share)
-- [ ] Implement mutating webhook to stamp `wren.io/user` from `UserInfo`
-- [ ] CLI sends `wren.io/user` annotation; webhook overrides with real identity
+- [ ] Implement mutating webhook to stamp `wren.giar.dev/user` from `UserInfo`
+- [ ] CLI sends `wren.giar.dev/user` annotation; webhook overrides with real identity
 - [ ] Controller: look up WrenUser on reconcile, resolve UID/GID
 - [ ] Container backend: set `securityContext.runAsUser`/`runAsGroup` on pods
 - [ ] Container backend: set `USER`/`HOME` env vars from WrenUser
@@ -533,6 +533,31 @@ The scheduler crate sees only priority numbers. The controller crate handles
 user identity plumbing. Both backends receive the same UID/GID — files written
 to shared filesystems have correct ownership regardless of execution mode.
 
+#### Security: No Anonymous or Root Execution
+
+**Hard rule: every job must have a valid, non-root user identity.**
+
+The controller enforces this at scheduling time:
+- Job enters `Scheduling` → controller resolves `wren.giar.dev/user` annotation → looks up WrenUser CRD
+- If no annotation, no matching WrenUser, or WrenUser has `uid: 0` → job is **Failed** immediately
+- Jobs never run as root (uid=0) or as an anonymous/default user
+
+This means:
+- The mutating webhook stamps `wren.giar.dev/user` from K8s UserInfo (automatic for kubectl users)
+- An admin must create a `WrenUser` CRD for every user before they can submit jobs
+- The CLI should send `wren.giar.dev/user` as a convenience; the webhook always overrides with the real identity
+
+**Future: API Gateway for Job Submission**
+
+When adding a REST API gateway (Phase 7+), the gateway will:
+1. Authenticate users via OIDC/token (independent of K8s RBAC)
+2. Stamp `wren.giar.dev/user` on the WrenJob before creating it via the K8s API
+3. The controller's existing enforcement (require valid WrenUser, reject uid=0) provides defense-in-depth
+4. The gateway can add additional checks: rate limiting, quota pre-validation, project authorization
+
+The current architecture (annotation + WrenUser CRD lookup + controller enforcement) is designed to
+work unchanged behind an API gateway — the gateway just becomes another source of the annotation.
+
 ### Phase 6: Production Hardening (v0.6.0)
 **Goal:** Ready for production HPC workloads.
 
@@ -544,6 +569,17 @@ to shared filesystems have correct ownership regardless of execution mode.
 - [ ] Comprehensive documentation
 - [ ] Performance benchmarking (scheduling latency at scale)
 - [x] CI/CD pipeline (GitHub Actions: test, lint, build, container image)
+
+### Phase 7: API Gateway & REST Interface (future)
+**Goal:** REST API for job submission independent of kubectl/K8s RBAC.
+
+- [ ] API gateway service (axum-based, separate binary or mode)
+- [ ] OIDC/token authentication (map external identity to `wren.giar.dev/user`)
+- [ ] REST endpoints: `POST /jobs`, `GET /jobs`, `DELETE /jobs/{id}`, `GET /jobs/{id}/logs`
+- [ ] Rate limiting and quota pre-validation at the gateway level
+- [ ] Project authorization (which users can submit to which projects)
+- [ ] WebSocket endpoint for job status streaming
+- [ ] Gateway stamps `wren.giar.dev/user` annotation, controller enforces identity as today
 
 ## Coding Conventions
 

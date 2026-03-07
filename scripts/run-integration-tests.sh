@@ -48,6 +48,11 @@ export KUBECONFIG_FILE="${KUBECONFIG}"
 # Pod label key used by the controller to associate pods with an WrenJob.
 WREN_JOB_LABEL="wren.giar.dev/job-name"
 
+# Default test user for smoke/CLI tests (created after CRDs are installed).
+TEST_USER_NAME="wren-test-user"
+TEST_USER_UID=65534
+TEST_USER_GID=65534
+
 # ---------------------------------------------------------------------------
 # Flags (set via CLI arguments, matching Reaper's interface)
 # ---------------------------------------------------------------------------
@@ -444,6 +449,28 @@ install_crds() {
 }
 
 # ---------------------------------------------------------------------------
+# Step 4b: Create test WrenUser for smoke/CLI tests
+#
+# Every job requires a valid WrenUser identity (security: no anonymous or root
+# execution). This creates a non-privileged test user used by all smoke and CLI
+# tests. Multi-user identity tests create their own users.
+# ---------------------------------------------------------------------------
+create_test_user() {
+    section "Creating test WrenUser '${TEST_USER_NAME}' (uid=${TEST_USER_UID})"
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: ${TEST_USER_NAME}
+spec:
+  uid: ${TEST_USER_UID}
+  gid: ${TEST_USER_GID}
+  homeDir: "/tmp"
+EOF
+    success "Test WrenUser created"
+}
+
+# ---------------------------------------------------------------------------
 # Step 5: Install RBAC
 # ---------------------------------------------------------------------------
 install_rbac() {
@@ -621,6 +648,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 2
@@ -739,6 +768,8 @@ kind: WrenQueue
 metadata:
   name: ${queue_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   maxNodes: 64
   maxWalltime: "12h"
@@ -792,6 +823,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 0
@@ -857,6 +890,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -937,6 +972,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -996,6 +1033,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -1064,6 +1103,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -1133,6 +1174,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -1206,6 +1249,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -1268,6 +1313,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -1330,6 +1377,8 @@ kind: WrenJob
 metadata:
   name: ${multi_job}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 2
@@ -1589,7 +1638,7 @@ metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
   annotations:
-    wren.io/user: "${user_name}"
+    wren.giar.dev/user: "${user_name}"
 spec:
   queue: default
   nodes: 1
@@ -1689,7 +1738,7 @@ metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
   annotations:
-    wren.io/user: "${user_name}"
+    wren.giar.dev/user: "${user_name}"
 spec:
   queue: default
   nodes: 1
@@ -1778,13 +1827,13 @@ user_test_pod_env_vars() {
 }
 
 # ---------------------------------------------------------------------------
-# User test 5: Graceful degradation — job with wren.io/user annotation but
-# no matching WrenUser CRD → pod runs without securityContext changes.
+# User test 5: Missing WrenUser — job with wren.giar.dev/user annotation but
+# no matching WrenUser CRD → job must be Failed (security: no anonymous runs).
 # ---------------------------------------------------------------------------
 _user_test_missing_wrenuser() {
     local job_name="user-missing-job"
 
-    # Do NOT create a WrenUser — test graceful degradation
+    # Do NOT create a WrenUser — test that the job is rejected
     cat <<EOF | kubectl apply -f -
 apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
@@ -1792,7 +1841,7 @@ metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
   annotations:
-    wren.io/user: "nonexistent-user"
+    wren.giar.dev/user: "nonexistent-user"
 spec:
   queue: default
   nodes: 1
@@ -1803,65 +1852,47 @@ spec:
     command: ["sh", "-c", "echo no-user && sleep 30"]
 EOF
 
-    # The job should still progress — not fail because of missing WrenUser
-    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
-        error "Job failed to progress with missing WrenUser — should degrade gracefully"
-        delete_job "${job_name}"
-        return 1
-    fi
+    # The job should reach Failed — no valid user identity
+    if wait_for_job_state "${job_name}" "Failed" "${JOB_TIMEOUT}"; then
+        log "  Job correctly rejected with missing WrenUser"
 
-    # Wait for pod
-    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
-    local pod_name=""
-    while true; do
-        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
-            -l "wren.giar.dev/job-name=${job_name}" \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then break; fi
-        if [[ "$(date +%s)" -ge "$deadline" ]]; then
-            warn "No pod found — may still be scheduling"
-            delete_job "${job_name}"
-            return 0  # not a hard failure
+        # Verify the reason mentions user identity
+        local reason
+        reason=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.status.reason}' 2>/dev/null || echo "")
+        log "  Failure reason: ${reason}"
+        if [[ "$reason" == *"WrenUser"* || "$reason" == *"user"* || "$reason" == *"identity"* ]]; then
+            log "  Reason mentions user/identity (correct)"
+        else
+            warn "Failure reason does not mention user identity: '${reason}'"
         fi
-        sleep 3
-    done
 
-    log "  Found pod: ${pod_name}"
+        delete_job "${job_name}"
+        return 0
+    fi
 
-    # runAsUser should NOT be set (no WrenUser → no identity)
-    local run_as_user
-    run_as_user=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
-        -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
-    if [[ -z "$run_as_user" || "$run_as_user" == "null" ]]; then
-        log "  runAsUser correctly absent (graceful degradation)"
-    else
-        error "runAsUser unexpectedly set to '${run_as_user}' with missing WrenUser"
+    # If the job progressed to Running/Succeeded, that's a security failure
+    local state
+    state=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+    if [[ "$state" == "Running" || "$state" == "Succeeded" ]]; then
+        error "SECURITY: job ran without valid WrenUser identity (state: ${state})"
         delete_job "${job_name}"
         return 1
     fi
 
-    # USER env var should NOT be set
-    local user_val
-    user_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
-        -o jsonpath='{.spec.containers[0].env[?(@.name=="USER")].value}' 2>/dev/null || echo "")
-    if [[ -z "$user_val" ]]; then
-        log "  USER env var correctly absent"
-    else
-        error "USER env var unexpectedly set to '${user_val}' with missing WrenUser"
-        delete_job "${job_name}"
-        return 1
-    fi
-
+    warn "Job did not reach Failed within timeout (state: '${state}')"
     delete_job "${job_name}"
-    return 0
+    return 1
 }
 
 user_test_missing_wrenuser() {
-    run_test "graceful degradation with missing WrenUser" _user_test_missing_wrenuser
+    run_test "missing WrenUser rejects job (security)" _user_test_missing_wrenuser
 }
 
 # ---------------------------------------------------------------------------
-# User test 6: No annotation — job without wren.io/user runs as default.
+# User test 6: No annotation — job without wren.giar.dev/user must be Failed
+# (security: every job must have a valid user identity).
 # ---------------------------------------------------------------------------
 _user_test_no_annotation() {
     local job_name="user-noannotation-job"
@@ -1882,49 +1913,90 @@ spec:
     command: ["sh", "-c", "echo anonymous && sleep 30"]
 EOF
 
-    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
-        error "Job without annotation failed to progress"
+    # Job should reach Failed — no user annotation means no identity
+    if wait_for_job_state "${job_name}" "Failed" "${JOB_TIMEOUT}"; then
+        log "  Job correctly rejected without wren.giar.dev/user annotation"
+        delete_job "${job_name}"
+        return 0
+    fi
+
+    # If it ran, that's a security issue
+    local state
+    state=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+    if [[ "$state" == "Running" || "$state" == "Succeeded" ]]; then
+        error "SECURITY: job ran without wren.giar.dev/user annotation (state: ${state})"
         delete_job "${job_name}"
         return 1
     fi
 
-    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
-    local pod_name=""
-    while true; do
-        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
-            -l "wren.giar.dev/job-name=${job_name}" \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then break; fi
-        if [[ "$(date +%s)" -ge "$deadline" ]]; then
-            warn "No pod found"
-            delete_job "${job_name}"
-            return 0
-        fi
-        sleep 3
-    done
-
-    # No runAsUser should be set
-    local run_as_user
-    run_as_user=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
-        -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
-    if [[ -z "$run_as_user" || "$run_as_user" == "null" ]]; then
-        log "  runAsUser correctly absent (no annotation)"
-    else
-        error "runAsUser unexpectedly set to '${run_as_user}' without wren.io/user annotation"
-        delete_job "${job_name}"
-        return 1
-    fi
-
+    warn "Job did not reach Failed within timeout (state: '${state}')"
     delete_job "${job_name}"
-    return 0
+    return 1
 }
 
 user_test_no_annotation() {
-    run_test "job without wren.io/user runs as default" _user_test_no_annotation
+    run_test "job without wren.giar.dev/user annotation is rejected (security)" _user_test_no_annotation
 }
 
 # ---------------------------------------------------------------------------
-# User test 7: Two users, two jobs — verify each pod gets correct identity.
+# User test 10: WrenUser with uid=0 (root) — job must be rejected.
+# ---------------------------------------------------------------------------
+_user_test_reject_root_uid() {
+    local user_name="test-user-root"
+    local job_name="user-root-job"
+
+    # Create a WrenUser with uid=0 (root)
+    create_wrenuser "${user_name}" 0 0
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${user_name}"
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo should-not-run && sleep 30"]
+EOF
+
+    # Job should reach Failed — uid=0 is rejected
+    if wait_for_job_state "${job_name}" "Failed" "${JOB_TIMEOUT}"; then
+        log "  Job correctly rejected with uid=0 WrenUser"
+        delete_job "${job_name}"
+        delete_wrenuser "${user_name}"
+        return 0
+    fi
+
+    local state
+    state=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+    if [[ "$state" == "Running" || "$state" == "Succeeded" ]]; then
+        error "SECURITY: job ran as root (uid=0) — this must never happen"
+        delete_job "${job_name}"
+        delete_wrenuser "${user_name}"
+        return 1
+    fi
+
+    warn "Job did not reach Failed within timeout (state: '${state}')"
+    delete_job "${job_name}"
+    delete_wrenuser "${user_name}"
+    return 1
+}
+
+user_test_reject_root_uid() {
+    run_test "WrenUser with uid=0 (root) rejects job (security)" _user_test_reject_root_uid
+}
+
+# ---------------------------------------------------------------------------
+# User test 11: Two users, two jobs — verify each pod gets correct identity.
 # ---------------------------------------------------------------------------
 _user_test_two_users() {
     local user_a="test-user-alice"
@@ -1946,7 +2018,7 @@ metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
   annotations:
-    wren.io/user: "${user_ann}"
+    wren.giar.dev/user: "${user_ann}"
 spec:
   queue: default
   nodes: 1
@@ -2053,7 +2125,7 @@ metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
   annotations:
-    wren.io/user: "${user_name}"
+    wren.giar.dev/user: "${user_name}"
 spec:
   queue: default
   nodes: 1
@@ -2138,6 +2210,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -2228,6 +2302,7 @@ run_user_tests() {
     user_test_no_homedir
     user_test_missing_wrenuser
     user_test_no_annotation
+    user_test_reject_root_uid
     user_test_two_users
 }
 
@@ -2266,6 +2341,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -2332,6 +2409,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -2407,6 +2486,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 2
@@ -2494,6 +2575,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -2553,6 +2636,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -2644,6 +2729,8 @@ kind: WrenJob
 metadata:
   name: ${job_name}
   namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: "${TEST_USER_NAME}"
 spec:
   queue: default
   nodes: 1
@@ -2780,6 +2867,7 @@ main() {
     build_binary
     build_and_load_image
     install_crds
+    create_test_user
     ensure_namespace
     install_rbac
     deploy_controller

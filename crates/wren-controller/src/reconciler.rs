@@ -29,7 +29,7 @@ pub async fn reconcile(job: &WrenJob, ctx: &ReconcilerContext) -> Result<(), Wre
     let status = job.status.as_ref().cloned().unwrap_or_default();
     let spec = &job.spec;
 
-    // Resolve user identity from wren.io/user annotation
+    // Resolve user identity from wren.giar.dev/user annotation
     let user = crate::user_identity::resolve_user_identity(
         &ctx.client,
         job.metadata.annotations.as_ref(),
@@ -106,6 +106,16 @@ async fn handle_scheduling(
     user: Option<&UserIdentity>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
+    // Security: every job must have a resolved user identity.
+    // Jobs without a valid WrenUser are rejected to prevent running as root.
+    if user.is_none() {
+        let reason = "no valid WrenUser identity resolved — job requires a \
+                       wren.giar.dev/user annotation pointing to an existing WrenUser with non-root uid";
+        warn!(job = name, "rejecting job: {}", reason);
+        update_status(name, namespace, JobState::Failed, Some(reason), ctx).await?;
+        return Ok(());
+    }
+
     // Attempt gang scheduling
     let cluster = ctx.cluster_state.read().await;
 

@@ -206,7 +206,7 @@ fn admission_denied(uid: String, errors: Vec<String>) -> AdmissionResponse {
     }
 }
 
-/// Build a mutating admission response that stamps `wren.io/user` annotation.
+/// Build a mutating admission response that stamps `wren.giar.dev/user` annotation.
 fn admission_mutate_user(uid: String, username: &str) -> AdmissionResponse {
     use base64::Engine;
 
@@ -218,7 +218,7 @@ fn admission_mutate_user(uid: String, username: &str) -> AdmissionResponse {
         },
         {
             "op": "add",
-            "path": "/metadata/annotations/wren.io~1user",
+            "path": "/metadata/annotations/wren.giar.dev~1user",
             "value": username
         }
     ]);
@@ -238,7 +238,7 @@ fn admission_mutate_user(uid: String, username: &str) -> AdmissionResponse {
     }
 }
 
-/// Mutating webhook handler: stamps `wren.io/user` from the K8s API UserInfo.
+/// Mutating webhook handler: stamps `wren.giar.dev/user` from the K8s API UserInfo.
 async fn mutate_wrenjob_handler(
     Json(review): Json<AdmissionReview<serde_json::Value>>,
 ) -> (StatusCode, Json<AdmissionResponse>) {
@@ -256,7 +256,7 @@ async fn mutate_wrenjob_handler(
         return (StatusCode::OK, Json(admission_allowed(uid)));
     }
 
-    info!(uid, user = username, "mutating webhook: stamping wren.io/user");
+    info!(uid, user = username, "mutating webhook: stamping wren.giar.dev/user");
     (StatusCode::OK, Json(admission_mutate_user(uid, username)))
 }
 
@@ -858,7 +858,7 @@ mod tests {
         let ops = patch.as_array().unwrap();
         assert_eq!(ops.len(), 2);
         assert_eq!(ops[1]["op"], "add");
-        assert_eq!(ops[1]["path"], "/metadata/annotations/wren.io~1user");
+        assert_eq!(ops[1]["path"], "/metadata/annotations/wren.giar.dev~1user");
         assert_eq!(ops[1]["value"], "miguel");
     }
 
