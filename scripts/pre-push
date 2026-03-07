@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Pre-push hook: run fmt, clippy, and tests before pushing.
+# Prevents CI failures from formatting or lint issues.
+#
+# Install: make hooks
+set -euo pipefail
+
+echo "[pre-push] Running cargo fmt --check..."
+cargo fmt --all -- --check
+
+echo "[pre-push] Running cargo clippy..."
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "[pre-push] Running cargo test..."
+cargo test --workspace
+
+echo "[pre-push] All checks passed."

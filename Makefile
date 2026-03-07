@@ -11,7 +11,7 @@ CLI_BIN := wren
 .PHONY: help build build-release cli cli-release cli-install controller controller-release \
         fmt clippy check-linux test test-unit test-cli test-scheduler test-core \
         coverage ci docker helm-lint helm-template integration integration-quick \
-        quickstart crds clean clean-all
+        quickstart crds hooks clean clean-all clean-cluster
 
 .DEFAULT_GOAL := help
 
@@ -132,6 +132,15 @@ quickstart: ## Run quickstart script (spins up kind cluster + examples)
 
 crds: ## Regenerate CRD manifests from Rust types
 	cargo run -p wren-core --bin crd-gen -- all
+
+# ---------------------------------------------------------------------------
+# Git hooks
+# ---------------------------------------------------------------------------
+
+hooks: ## Install git hooks (pre-push)
+	cp scripts/pre-push .git/hooks/pre-push
+	chmod +x .git/hooks/pre-push
+	@echo "Git hooks installed."
 
 # ---------------------------------------------------------------------------
 # Cleanup
