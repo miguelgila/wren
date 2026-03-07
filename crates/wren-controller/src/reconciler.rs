@@ -7,6 +7,7 @@ use wren_core::backend::{BackendJobStatus, ExecutionBackend};
 use wren_core::{ClusterState, JobState, WalltimeDuration, WrenError, WrenJob, WrenJobStatus};
 use wren_scheduler::gang::GangScheduler;
 
+use crate::job_id::JobIdAllocator;
 use crate::metrics::Metrics;
 use crate::reservation::ReservationManager;
 
@@ -17,6 +18,7 @@ pub struct ReconcilerContext {
     pub backend: Arc<dyn ExecutionBackend>,
     pub metrics: Metrics,
     pub reservations: RwLock<ReservationManager>,
+    pub job_id_allocator: JobIdAllocator,
 }
 
 /// Reconcile a single WrenJob. Called by the controller whenever the resource changes.
@@ -60,8 +62,26 @@ async fn handle_pending(
         return Ok(());
     }
 
-    // Transition to Scheduling
-    update_status(name, namespace, JobState::Scheduling, None, ctx).await?;
+    // Allocate a sequential job ID
+    let job_id = ctx.job_id_allocator.allocate().await?;
+    info!(job = name, job_id, "assigned job ID");
+
+    // Transition to Scheduling with the assigned job ID
+    let api: Api<WrenJob> = Api::namespaced(ctx.client.clone(), namespace);
+    let status = serde_json::json!({
+        "status": {
+            "jobId": job_id,
+            "state": "Scheduling",
+        }
+    });
+    api.patch_status(
+        name,
+        &PatchParams::apply("wren-controller"),
+        &Patch::Merge(&status),
+    )
+    .await
+    .map_err(WrenError::KubeError)?;
+
     ctx.metrics
         .record_job_state_change(&spec.queue, "Pending", "Scheduling");
     Ok(())

@@ -25,10 +25,10 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  # ConfigMap management for hostfiles
+  # ConfigMap management for hostfiles and job ID counter
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Secret management for SSH keys
   - apiGroups: [""]
     resources: ["secrets"]

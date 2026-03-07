@@ -13,6 +13,11 @@ pub(crate) fn format_job_status(
     let mut out = String::new();
     use std::fmt::Write;
 
+    if let Some(s) = status {
+        if let Some(id) = s.job_id {
+            writeln!(out, "JobID:       {}", id).unwrap();
+        }
+    }
     writeln!(out, "Name:        {}", name).unwrap();
     writeln!(out, "Namespace:   {}", namespace).unwrap();
     writeln!(out, "Queue:       {}", spec.queue).unwrap();
@@ -113,6 +118,7 @@ mod tests {
     fn test_format_job_status_basic() {
         let spec = make_spec();
         let output = format_job_status("my-job", "default", &spec, None);
+        assert!(!output.contains("JobID:"));
         assert!(output.contains("Name:        my-job"));
         assert!(output.contains("Namespace:   default"));
         assert!(output.contains("Queue:       default"));
@@ -124,6 +130,7 @@ mod tests {
     fn test_format_job_status_with_status() {
         let spec = make_spec();
         let status = WrenJobStatus {
+            job_id: Some(7),
             state: JobState::Running,
             message: Some("all workers ready".to_string()),
             assigned_nodes: vec!["node-0".to_string(), "node-1".to_string()],
@@ -133,6 +140,7 @@ mod tests {
             total_workers: 2,
         };
         let output = format_job_status("my-job", "ns", &spec, Some(&status));
+        assert!(output.contains("JobID:       7"));
         assert!(output.contains("Running"));
         assert!(output.contains("all workers ready"));
         assert!(output.contains("Workers:     2/2"));

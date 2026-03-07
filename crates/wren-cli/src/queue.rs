@@ -35,12 +35,18 @@ pub async fn run(client: Client, queue: Option<&str>, namespace: Option<&str>) -
 
     // Print table header
     println!(
-        "{:<32} {:<16} {:<8} {:<16} {:<12}",
-        "NAME", "STATE", "NODES", "QUEUE", "AGE"
+        "{:<8} {:<32} {:<16} {:<8} {:<16} {:<12}",
+        "JOBID", "NAME", "STATE", "NODES", "QUEUE", "AGE"
     );
-    println!("{}", "-".repeat(88));
+    println!("{}", "-".repeat(96));
 
     for job in jobs {
+        let job_id = job
+            .status
+            .as_ref()
+            .and_then(|s| s.job_id)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string());
         let name = job.metadata.name.as_deref().unwrap_or("<unknown>");
         let state = job
             .status
@@ -57,8 +63,8 @@ pub async fn run(client: Client, queue: Option<&str>, namespace: Option<&str>) -
             .unwrap_or_else(|| "<unknown>".to_string());
 
         println!(
-            "{:<32} {:<16} {:<8} {:<16} {:<12}",
-            name, state, nodes, queue_name, age
+            "{:<8} {:<32} {:<16} {:<8} {:<16} {:<12}",
+            job_id, name, state, nodes, queue_name, age
         );
     }
 

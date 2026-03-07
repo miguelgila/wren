@@ -8,6 +8,7 @@ use tracing::{error, info, warn};
 use wren_core::{ClusterState, WrenError, WrenJob};
 
 mod container;
+mod job_id;
 mod leader_election;
 #[allow(dead_code)]
 mod metrics;
@@ -23,6 +24,7 @@ mod reservation;
 mod webhook;
 
 use container::ContainerBackend;
+use job_id::JobIdAllocator;
 use metrics::Metrics;
 use node_watcher::NodeWatcher;
 use reconciler::ReconcilerContext;
@@ -94,6 +96,10 @@ async fn main() -> anyhow::Result<()> {
     // Set up the execution backend
     let backend = Arc::new(ContainerBackend::new(client.clone()));
 
+    // Job ID allocator — counter persisted in a ConfigMap
+    let controller_namespace = std::env::var("WREN_NAMESPACE").unwrap_or_else(|_| "wren-system".to_string());
+    let job_id_allocator = JobIdAllocator::new(client.clone(), &controller_namespace);
+
     // Build reconciler context
     let ctx = Arc::new(ReconcilerContext {
         client: client.clone(),
@@ -101,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         backend,
         metrics: metrics.clone(),
         reservations: RwLock::new(reservation::ReservationManager::default()),
+        job_id_allocator,
     });
 
     // Start metrics server in background

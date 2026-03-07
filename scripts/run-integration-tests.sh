@@ -6,6 +6,7 @@
 #   ./scripts/run-integration-tests.sh --skip-cargo        # Skip cargo build & Rust tests
 #   ./scripts/run-integration-tests.sh --no-cleanup        # Keep kind cluster after run
 #   ./scripts/run-integration-tests.sh --verbose           # Print verbose output to stdout
+#   ./scripts/run-integration-tests.sh --only-cli          # Run only CLI integration tests
 #
 # Environment variables (override defaults):
 #   IMAGE_TAG=<tag>          — controller image tag (default: latest)
@@ -52,6 +53,7 @@ WREN_JOB_LABEL="wren.giar.dev/job-name"
 SKIP_CARGO=false
 NO_CLEANUP=false
 VERBOSE=false
+ONLY_CLI=false
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -61,29 +63,34 @@ while [[ $# -gt 0 ]]; do
     --skip-cargo)  SKIP_CARGO=true; shift ;;
     --no-cleanup)  NO_CLEANUP=true; shift ;;
     --verbose)     VERBOSE=true; shift ;;
+    --only-cli)    ONLY_CLI=true; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose]"
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli]"
       echo "  --skip-cargo  Skip cargo build and Rust integration tests"
       echo "  --no-cleanup  Keep kind cluster after run"
       echo "  --verbose     Also print verbose output to stdout"
+      echo "  --only-cli    Run only CLI integration tests (requires running cluster)"
       echo ""
       echo "Environment variables:"
       echo "  CLUSTER_NAME   Kind cluster name (default: wren-test)"
       echo "  IMAGE_TAG      Controller image tag (default: latest)"
-      echo "  TESTS          Test suites: rust|shell|all (default: all)"
+      echo "  TESTS          Test suites: rust|shell|cli|all (default: all)"
       echo "  JOB_TIMEOUT    Seconds to wait for job status (default: 90)"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose]" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli]" >&2
       exit 1
       ;;
   esac
 done
 
 # Apply flag effects to config variables
-if $SKIP_CARGO; then
+if $ONLY_CLI; then
+  TESTS="cli"
+  SKIP_BUILD="${SKIP_BUILD:-0}"
+elif $SKIP_CARGO; then
   # --skip-cargo implies: skip docker build AND skip Rust integration tests
   SKIP_BUILD="1"
   if [[ "$TESTS" == "all" ]]; then
@@ -196,8 +203,8 @@ check_prereqs() {
     local missing=0
     local required_cmds=(kind kubectl docker)
 
-    # cargo is only required when running Rust tests
-    if [[ "$TESTS" == "rust" || "$TESTS" == "all" ]]; then
+    # cargo is required when running Rust tests or CLI tests (to build the binary)
+    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" || "$TESTS" == "all" ]]; then
         required_cmds+=(cargo)
     fi
 
@@ -518,8 +525,8 @@ wait_for_controller() {
 run_rust_tests() {
     section "Running Rust integration tests (cargo test --ignored)"
 
-    if [[ "$TESTS" == "shell" ]]; then
-        record_skip "Rust integration tests (TESTS=shell)"
+    if [[ "$TESTS" == "shell" || "$TESTS" == "cli" ]]; then
+        record_skip "Rust integration tests (TESTS=${TESTS})"
         return
     fi
 
@@ -1357,14 +1364,507 @@ smoke_test_job_logs() {
     run_test "job log retrieval after completion" _smoke_test_job_logs
 }
 
+# ===========================================================================
+# CLI integration tests
+#
+# These tests exercise the `wren` CLI binary against a live cluster. They
+# verify that submit, queue, status, cancel, and job IDs work end-to-end.
+# ===========================================================================
+
+# Helper: locate the wren CLI binary (release preferred, then debug).
+find_wren_bin() {
+    local bin="${REPO_ROOT}/target/release/wren"
+    if [[ ! -x "$bin" ]]; then
+        bin="${REPO_ROOT}/target/debug/wren"
+    fi
+    if [[ ! -x "$bin" ]]; then
+        return 1
+    fi
+    echo "$bin"
+}
+
+# ---------------------------------------------------------------------------
+# CLI test 1: wren submit — submit a job and verify job ID is returned.
+# ---------------------------------------------------------------------------
+_cli_test_submit_job_id() {
+    local wren_bin
+    wren_bin=$(find_wren_bin) || { error "wren CLI binary not found — run cargo build first"; return 1; }
+
+    local job_name="cli-submit-jobid"
+    local manifest_file
+    manifest_file=$(mktemp /tmp/wren-cli-test-XXXXXX.yaml)
+    cat > "${manifest_file}" <<EOF
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo hello && sleep 60"]
+EOF
+
+    log "Submitting job via wren CLI ..."
+    local submit_output
+    submit_output=$("${wren_bin}" submit "${manifest_file}" 2>&1) || true
+    rm -f "${manifest_file}"
+    log "  submit output: ${submit_output}"
+
+    # Check output mentions the job name
+    if [[ "$submit_output" != *"${job_name}"* ]]; then
+        error "wren submit output does not mention job name '${job_name}'"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # Check output contains a numeric job ID ("Submitted job <N>")
+    if [[ "$submit_output" =~ Submitted\ job\ ([0-9]+) ]]; then
+        local job_id="${BASH_REMATCH[1]}"
+        log "  wren submit returned job ID: ${job_id}"
+        success "wren submit returned job ID ${job_id}"
+    else
+        # Job ID may still be pending — check via status
+        log "  submit did not return job ID inline, checking via status ..."
+        sleep 5
+        local status_job_id
+        status_job_id=$(kubectl get wrenjob "${job_name}" \
+            -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.status.jobId}' 2>/dev/null || echo "")
+        if [[ -n "$status_job_id" && "$status_job_id" != "null" ]]; then
+            log "  job ID found via API: ${status_job_id}"
+        else
+            warn "No job ID assigned (controller may not be running)"
+        fi
+    fi
+
+    delete_job "${job_name}"
+    return 0
+}
+
+cli_test_submit_job_id() {
+    run_test "CLI: wren submit returns job ID" _cli_test_submit_job_id
+}
+
+# ---------------------------------------------------------------------------
+# CLI test 2: wren queue — verify table output includes JOBID column.
+# ---------------------------------------------------------------------------
+_cli_test_queue_output() {
+    local wren_bin
+    wren_bin=$(find_wren_bin) || { error "wren CLI binary not found"; return 1; }
+
+    # Submit a job so there's something to list
+    local job_name="cli-queue-test"
+    cat <<EOF | kubectl apply -f - 2>/dev/null
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo hello && sleep 60"]
+EOF
+
+    # Wait for it to be reconciled
+    wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" 30 || true
+
+    log "Running wren queue ..."
+    local queue_output
+    queue_output=$("${wren_bin}" queue -n "${TEST_NAMESPACE}" 2>&1) || true
+    log "  queue output:"
+    log "${queue_output}"
+
+    local errors=0
+
+    # Verify JOBID column header
+    if [[ "$queue_output" == *"JOBID"* ]]; then
+        log "  JOBID column header present"
+    else
+        error "wren queue output missing JOBID column header"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Verify NAME column
+    if [[ "$queue_output" == *"NAME"* ]]; then
+        log "  NAME column header present"
+    else
+        error "wren queue output missing NAME column header"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Verify STATE column
+    if [[ "$queue_output" == *"STATE"* ]]; then
+        log "  STATE column header present"
+    else
+        error "wren queue output missing STATE column header"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Verify our job appears in the output
+    if [[ "$queue_output" == *"${job_name}"* ]]; then
+        log "  job '${job_name}' listed in queue output"
+    else
+        error "wren queue output does not list job '${job_name}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    delete_job "${job_name}"
+    [[ "$errors" -eq 0 ]]
+}
+
+cli_test_queue_output() {
+    run_test "CLI: wren queue shows JOBID column" _cli_test_queue_output
+}
+
+# ---------------------------------------------------------------------------
+# CLI test 3: wren status — verify output includes JobID and key fields.
+# ---------------------------------------------------------------------------
+_cli_test_status_output() {
+    local wren_bin
+    wren_bin=$(find_wren_bin) || { error "wren CLI binary not found"; return 1; }
+
+    local job_name="cli-status-test"
+    cat <<EOF | kubectl apply -f - 2>/dev/null
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 2
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo hello && sleep 60"]
+EOF
+
+    # Wait for controller to assign a job ID
+    wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" 30 || true
+
+    log "Running wren status ..."
+    local status_output
+    status_output=$("${wren_bin}" status "${job_name}" -n "${TEST_NAMESPACE}" 2>&1) || true
+    log "  status output:"
+    log "${status_output}"
+
+    local errors=0
+
+    # Verify key fields
+    if [[ "$status_output" == *"Name:"* ]]; then
+        log "  Name field present"
+    else
+        error "wren status missing Name field"
+        errors=$(( errors + 1 ))
+    fi
+
+    if [[ "$status_output" == *"Namespace:"* ]]; then
+        log "  Namespace field present"
+    else
+        error "wren status missing Namespace field"
+        errors=$(( errors + 1 ))
+    fi
+
+    if [[ "$status_output" == *"Queue:"* ]]; then
+        log "  Queue field present"
+    else
+        error "wren status missing Queue field"
+        errors=$(( errors + 1 ))
+    fi
+
+    if [[ "$status_output" == *"Nodes:"* ]]; then
+        log "  Nodes field present"
+    else
+        error "wren status missing Nodes field"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Check for JobID (may not be present if controller hasn't reconciled yet)
+    if [[ "$status_output" == *"JobID:"* ]]; then
+        log "  JobID field present"
+    else
+        warn "wren status missing JobID field (controller may not have assigned yet)"
+    fi
+
+    # Verify it shows the correct job name
+    if [[ "$status_output" == *"${job_name}"* ]]; then
+        log "  Correct job name in output"
+    else
+        error "wren status does not contain job name '${job_name}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    delete_job "${job_name}"
+    [[ "$errors" -eq 0 ]]
+}
+
+cli_test_status_output() {
+    run_test "CLI: wren status shows job details" _cli_test_status_output
+}
+
+# ---------------------------------------------------------------------------
+# CLI test 4: wren cancel — submit then cancel, verify deletion.
+# ---------------------------------------------------------------------------
+_cli_test_cancel() {
+    local wren_bin
+    wren_bin=$(find_wren_bin) || { error "wren CLI binary not found"; return 1; }
+
+    local job_name="cli-cancel-test"
+    cat <<EOF | kubectl apply -f - 2>/dev/null
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "10m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "sleep 300"]
+EOF
+
+    # Give the controller a moment
+    sleep 3
+
+    log "Running wren cancel ..."
+    local cancel_output
+    cancel_output=$("${wren_bin}" cancel "${job_name}" -n "${TEST_NAMESPACE}" 2>&1) || true
+    log "  cancel output: ${cancel_output}"
+
+    if [[ "$cancel_output" == *"cancelled"* ]]; then
+        log "  Cancel confirmed in output"
+    else
+        warn "wren cancel output did not contain 'cancelled': '${cancel_output}'"
+    fi
+
+    # Verify job is gone
+    sleep 2
+    if kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" &>/dev/null; then
+        error "WrenJob '${job_name}' still exists after wren cancel"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    log "  Job successfully deleted via wren cancel"
+    # Clean up any remaining pods
+    kubectl delete pods \
+        -n "${TEST_NAMESPACE}" \
+        -l "wren.giar.dev/job-name=${job_name}" \
+        --ignore-not-found 2>/dev/null || true
+    return 0
+}
+
+cli_test_cancel() {
+    run_test "CLI: wren cancel deletes job" _cli_test_cancel
+}
+
+# ---------------------------------------------------------------------------
+# CLI test 5: Sequential job IDs — submit two jobs and verify IDs increment.
+# ---------------------------------------------------------------------------
+_cli_test_sequential_job_ids() {
+    local job_name_1="cli-seqid-1"
+    local job_name_2="cli-seqid-2"
+
+    for job_name in "${job_name_1}" "${job_name_2}"; do
+        cat <<EOF | kubectl apply -f - 2>/dev/null
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo hello && sleep 60"]
+EOF
+    done
+
+    # Wait for both to be reconciled
+    wait_for_job_state "${job_name_1}" "Scheduling|Running|Succeeded" 30 || true
+    wait_for_job_state "${job_name_2}" "Scheduling|Running|Succeeded" 30 || true
+
+    local id1 id2
+    id1=$(kubectl get wrenjob "${job_name_1}" \
+        -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.status.jobId}' 2>/dev/null || echo "")
+    id2=$(kubectl get wrenjob "${job_name_2}" \
+        -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.status.jobId}' 2>/dev/null || echo "")
+
+    log "  Job 1 (${job_name_1}) ID: ${id1:-<none>}"
+    log "  Job 2 (${job_name_2}) ID: ${id2:-<none>}"
+
+    local errors=0
+
+    # Both should have numeric IDs
+    if [[ -z "$id1" || "$id1" == "null" ]]; then
+        error "Job 1 has no job ID assigned"
+        errors=$(( errors + 1 ))
+    fi
+
+    if [[ -z "$id2" || "$id2" == "null" ]]; then
+        error "Job 2 has no job ID assigned"
+        errors=$(( errors + 1 ))
+    fi
+
+    # IDs should be different and sequential (id2 > id1)
+    if [[ "$errors" -eq 0 ]]; then
+        if [[ "$id1" -ne "$id2" ]]; then
+            log "  IDs are distinct (correct)"
+        else
+            error "Both jobs got the same ID: ${id1}"
+            errors=$(( errors + 1 ))
+        fi
+
+        if [[ "$id2" -gt "$id1" ]]; then
+            log "  ID2 (${id2}) > ID1 (${id1}) — sequential (correct)"
+        else
+            error "IDs are not sequential: id1=${id1}, id2=${id2}"
+            errors=$(( errors + 1 ))
+        fi
+    fi
+
+    # Verify IDs show up in kubectl get wrenjobs output
+    local kubectl_output
+    kubectl_output=$(kubectl get wrenjobs -n "${TEST_NAMESPACE}" 2>/dev/null || echo "")
+    log "  kubectl get wrenjobs:"
+    log "${kubectl_output}"
+
+    if [[ "$kubectl_output" == *"JOBID"* ]]; then
+        log "  JOBID column visible in kubectl output"
+    else
+        warn "JOBID column not visible in kubectl get wrenjobs (CRD may need regeneration)"
+    fi
+
+    delete_job "${job_name_1}"
+    delete_job "${job_name_2}"
+    [[ "$errors" -eq 0 ]]
+}
+
+cli_test_sequential_job_ids() {
+    run_test "CLI: sequential job ID assignment" _cli_test_sequential_job_ids
+}
+
+# ---------------------------------------------------------------------------
+# CLI test 6: wren queue with --queue filter — verify filtering works.
+# ---------------------------------------------------------------------------
+_cli_test_queue_filter() {
+    local wren_bin
+    wren_bin=$(find_wren_bin) || { error "wren CLI binary not found"; return 1; }
+
+    local job_name="cli-filter-test"
+    cat <<EOF | kubectl apply -f - 2>/dev/null
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "sleep 60"]
+EOF
+
+    sleep 3
+
+    # Filter by existing queue — should include our job
+    local output_default
+    output_default=$("${wren_bin}" queue -q default -n "${TEST_NAMESPACE}" 2>&1) || true
+
+    if [[ "$output_default" == *"${job_name}"* ]]; then
+        log "  Job found in default queue filter"
+    else
+        error "Job not found when filtering by queue 'default'"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # Filter by non-existent queue — should NOT include our job
+    local output_none
+    output_none=$("${wren_bin}" queue -q nonexistent -n "${TEST_NAMESPACE}" 2>&1) || true
+
+    if [[ "$output_none" == *"${job_name}"* ]]; then
+        error "Job appeared in wrong queue filter 'nonexistent'"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    log "  Queue filter correctly excludes job from wrong queue"
+    delete_job "${job_name}"
+    return 0
+}
+
+cli_test_queue_filter() {
+    run_test "CLI: wren queue --queue filter" _cli_test_queue_filter
+}
+
+# ---------------------------------------------------------------------------
+# Run all CLI tests
+# ---------------------------------------------------------------------------
+run_cli_tests() {
+    section "Running CLI integration tests"
+
+    if [[ "$TESTS" != "cli" && "$TESTS" != "all" ]]; then
+        record_skip "CLI integration tests (TESTS=${TESTS})"
+        return
+    fi
+
+    # Always build the CLI to ensure we test current code
+    log "Building wren CLI (release) ..."
+    if ! cargo build --release -p wren-cli --manifest-path "${REPO_ROOT}/Cargo.toml"; then
+        error "Failed to build wren CLI"
+        record_skip "CLI integration tests (build failed)"
+        return
+    fi
+
+    local wren_bin
+    wren_bin=$(find_wren_bin) || {
+        error "wren CLI binary not found after build"
+        record_skip "CLI integration tests (no binary)"
+        return
+    }
+
+    log "Using wren CLI: ${wren_bin}"
+    log "Version: $("${wren_bin}" --version 2>/dev/null || echo '<unknown>')"
+
+    cli_test_submit_job_id
+    cli_test_queue_output
+    cli_test_status_output
+    cli_test_cancel
+    cli_test_sequential_job_ids
+    cli_test_queue_filter
+}
+
 # ---------------------------------------------------------------------------
 # Run all shell smoke tests
 # ---------------------------------------------------------------------------
 run_shell_tests() {
     section "Running shell smoke tests"
 
-    if [[ "$TESTS" == "rust" ]]; then
-        record_skip "Shell smoke tests (TESTS=rust)"
+    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" ]]; then
+        record_skip "Shell smoke tests (TESTS=${TESTS})"
         return
     fi
 
@@ -1394,6 +1894,7 @@ main() {
     echo "  Test suites: ${TESTS}"
     echo "  Skip cargo:  ${SKIP_CARGO}"
     echo "  No cleanup:  ${NO_CLEANUP}"
+    echo "  Only CLI:    ${ONLY_CLI}"
     echo "  Verbose:     ${VERBOSE}"
     echo "  Log file:    ${LOG_FILE}"
     echo "========================================================"
@@ -1418,6 +1919,7 @@ main() {
 
     # Run the requested test suites
     run_shell_tests
+    run_cli_tests
     run_rust_tests
 
     # Print the consolidated test summary

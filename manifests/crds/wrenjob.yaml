@@ -13,6 +13,10 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.jobId
+      name: JobID
+      priority: 0
+      type: integer
     - jsonPath: .status.state
       name: State
       type: string
@@ -214,6 +218,12 @@ spec:
           status:
             nullable: true
             properties:
+              jobId:
+                description: Sequential numeric job ID (Slurm-style), assigned by the controller
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
               assignedNodes:
                 default: []
                 description: Nodes assigned to this job

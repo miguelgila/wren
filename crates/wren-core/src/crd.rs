@@ -13,6 +13,7 @@ use crate::types::*;
     kind = "WrenJob",
     namespaced,
     status = "WrenJobStatus",
+    printcolumn = r#"{"name":"JobID","type":"integer","jsonPath":".status.jobId","priority":0}"#,
     printcolumn = r#"{"name":"State","type":"string","jsonPath":".status.state"}"#,
     printcolumn = r#"{"name":"Nodes","type":"integer","jsonPath":".spec.nodes"}"#,
     printcolumn = r#"{"name":"Queue","type":"string","jsonPath":".spec.queue"}"#,
@@ -149,6 +150,9 @@ pub enum DependencyType {
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WrenJobStatus {
+    /// Sequential numeric job ID (Slurm-style), assigned by the controller
+    #[serde(default)]
+    pub job_id: Option<u64>,
     /// Current state of the job
     #[serde(default)]
     pub state: JobState,
@@ -343,6 +347,7 @@ mod tests {
     #[test]
     fn test_job_status_defaults() {
         let status = WrenJobStatus::default();
+        assert!(status.job_id.is_none());
         assert_eq!(status.state, JobState::Pending);
         assert!(status.message.is_none());
         assert!(status.assigned_nodes.is_empty());
@@ -524,6 +529,7 @@ mod tests {
     #[test]
     fn test_wrenjob_status_serde_roundtrip() {
         let status = WrenJobStatus {
+            job_id: Some(42),
             state: JobState::Running,
             message: Some("all workers ready".to_string()),
             assigned_nodes: vec!["node-0".to_string(), "node-1".to_string()],
@@ -534,6 +540,7 @@ mod tests {
         };
         let json = serde_json::to_string(&status).unwrap();
         let parsed: WrenJobStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.job_id, Some(42));
         assert_eq!(parsed.state, JobState::Running);
         assert_eq!(parsed.ready_workers, 2);
         assert_eq!(parsed.assigned_nodes.len(), 2);

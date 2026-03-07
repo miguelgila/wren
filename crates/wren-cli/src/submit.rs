@@ -51,7 +51,24 @@ pub async fn run(
 
     let name = created.metadata.name.as_deref().unwrap_or("<unknown>");
     info!(job = name, namespace = %namespace, "WrenJob submitted");
-    println!("job/{name} submitted to namespace {namespace}");
+
+    // Poll briefly for the controller to assign a job ID
+    let mut job_id: Option<u64> = None;
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Ok(j) = api.get(name).await {
+            if let Some(id) = j.status.as_ref().and_then(|s| s.job_id) {
+                job_id = Some(id);
+                break;
+            }
+        }
+    }
+
+    if let Some(id) = job_id {
+        println!("Submitted job {id} (job/{name}) to namespace {namespace}");
+    } else {
+        println!("job/{name} submitted to namespace {namespace} (job ID pending)");
+    }
 
     Ok(())
 }
