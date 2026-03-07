@@ -25,15 +25,16 @@ pub(crate) fn parse_and_override_job(
 }
 
 /// Submit an WrenJob from a YAML file, with optional queue and nodes overrides.
-pub async fn run(file: &str, queue: Option<&str>, nodes: Option<u32>) -> Result<()> {
+pub async fn run(
+    client: Client,
+    file: &str,
+    queue: Option<&str>,
+    nodes: Option<u32>,
+) -> Result<()> {
     let yaml =
         fs::read_to_string(file).with_context(|| format!("failed to read job file: {file}"))?;
 
     let job = parse_and_override_job(&yaml, queue, nodes)?;
-
-    let client = Client::try_default()
-        .await
-        .context("failed to create Kubernetes client")?;
 
     let namespace = job
         .metadata

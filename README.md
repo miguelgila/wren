@@ -41,7 +41,26 @@ Wren bridges this gap.
 
 ## Quick Start
 
-### 1. Install CRDs and Deploy the Controller
+### 1. Spin Up a Playground Cluster
+
+If you don't have a Kubernetes cluster available, the quickstart script creates a local [Kind](https://kind.sigs.k8s.io/) cluster with topology-labeled workers, installs CRDs, builds and deploys the controller, and runs all example jobs:
+
+```bash
+./examples/quickstart.sh
+```
+
+Options:
+
+```bash
+./examples/quickstart.sh --release 0.3.0  # Use a specific release version
+./examples/quickstart.sh --dev            # Build controller from source
+./examples/quickstart.sh --no-cluster     # Skip cluster creation (reuse existing)
+./examples/quickstart.sh --cleanup        # Delete the Kind cluster
+```
+
+If you already have a cluster and prefer to set things up manually, continue with the steps below.
+
+### 2. Install CRDs and Deploy the Controller
 
 **Using Helm (recommended):**
 
@@ -57,7 +76,7 @@ kubectl apply -f manifests/rbac/
 kubectl apply -f manifests/deployment.yaml
 ```
 
-### 2. Create a Queue
+### 3. Create a Queue
 
 ```yaml
 apiVersion: wren.giar.dev/v1alpha1
@@ -77,7 +96,7 @@ spec:
 kubectl apply -f queue.yaml
 ```
 
-### 3. Submit a Job
+### 4. Submit a Job
 
 Create a `WrenJob` — the primary user-facing CRD (equivalent to Slurm's `sbatch`):
 
@@ -122,7 +141,7 @@ wren logs my-simulation --rank 0
 wren cancel my-simulation
 ```
 
-### 4. Simple (Non-MPI) Jobs
+### 5. Simple (Non-MPI) Jobs
 
 For single-node or non-MPI workloads, just omit the `mpi` section. Wren runs the command directly without a launcher/worker pattern:
 
@@ -204,7 +223,7 @@ Wren is structured as a Cargo workspace with four crates:
 - **Leader election** — HA controller deployment
 - **Prometheus metrics** — queue depth, wait time, scheduling latency, utilization
 - **Helm chart** — deploy with `helm install`
-- **Container image** — multi-arch (amd64/arm64) on GHCR
+- **Container image** — amd64 on GHCR
 - **Integration tests** — end-to-end validated with Kind cluster
 
 ## Examples
@@ -271,7 +290,7 @@ cargo test --workspace
 Every merged PR automatically triggers a patch version bump, changelog generation (via [git-cliff](https://git-cliff.org/)), and a GitHub Release with:
 - Static musl binaries for `x86_64` and `aarch64`
 - SHA-256 checksums signed with [cosign](https://github.com/sigstore/cosign) (keyless, via GitHub OIDC)
-- Multi-arch container image pushed to GHCR
+- Container image pushed to GHCR (amd64)
 
 To skip the automatic release, add the `skip-release` label to the PR. For minor/major bumps, use the **Manual Release** workflow.
 

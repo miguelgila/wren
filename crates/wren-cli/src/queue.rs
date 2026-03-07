@@ -6,11 +6,7 @@ use kube::{
 use wren_core::WrenJob;
 
 /// List WrenJobs with optional queue and namespace filters, formatted as a table.
-pub async fn run(queue: Option<&str>, namespace: Option<&str>) -> Result<()> {
-    let client = Client::try_default()
-        .await
-        .context("failed to create Kubernetes client")?;
-
+pub async fn run(client: Client, queue: Option<&str>, namespace: Option<&str>) -> Result<()> {
     let jobs: Vec<WrenJob> = if let Some(ns) = namespace {
         let api: Api<WrenJob> = Api::namespaced(client, ns);
         api.list(&ListParams::default())

@@ -40,7 +40,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prometheus = "0.13"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
