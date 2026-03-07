@@ -62,7 +62,10 @@ mod tests {
     fn test_extract_username_present() {
         let mut annotations = BTreeMap::new();
         annotations.insert("wren.giar.dev/user".to_string(), "miguel".to_string());
-        assert_eq!(extract_username(Some(&annotations)), Some("miguel".to_string()));
+        assert_eq!(
+            extract_username(Some(&annotations)),
+            Some("miguel".to_string())
+        );
     }
 
     #[test]

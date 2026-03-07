@@ -252,11 +252,18 @@ async fn mutate_wrenjob_handler(
         .unwrap_or("");
 
     if username.is_empty() {
-        info!(uid, "mutating webhook: no username in UserInfo, allowing without mutation");
+        info!(
+            uid,
+            "mutating webhook: no username in UserInfo, allowing without mutation"
+        );
         return (StatusCode::OK, Json(admission_allowed(uid)));
     }
 
-    info!(uid, user = username, "mutating webhook: stamping wren.giar.dev/user");
+    info!(
+        uid,
+        user = username,
+        "mutating webhook: stamping wren.giar.dev/user"
+    );
     (StatusCode::OK, Json(admission_mutate_user(uid, username)))
 }
 

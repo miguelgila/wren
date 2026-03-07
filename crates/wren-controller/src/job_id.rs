@@ -34,7 +34,12 @@ impl JobIdAllocator {
 
     /// Read the current counter value from the ConfigMap, creating it if needed.
     async fn read_counter(&self) -> Result<u64, WrenError> {
-        match self.api.get_opt(CONFIGMAP_NAME).await.map_err(WrenError::KubeError)? {
+        match self
+            .api
+            .get_opt(CONFIGMAP_NAME)
+            .await
+            .map_err(WrenError::KubeError)?
+        {
             Some(cm) => {
                 let val = cm
                     .data

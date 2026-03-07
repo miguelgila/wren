@@ -1156,8 +1156,12 @@ mod tests {
         assert_eq!(sc.run_as_user, Some(1001));
         assert_eq!(sc.run_as_group, Some(1001));
         let env = pod_spec.containers[0].env.as_ref().unwrap();
-        assert!(env.iter().any(|e| e.name == "USER" && e.value.as_deref() == Some("miguel")));
-        assert!(env.iter().any(|e| e.name == "HOME" && e.value.as_deref() == Some("/home/miguel")));
+        assert!(env
+            .iter()
+            .any(|e| e.name == "USER" && e.value.as_deref() == Some("miguel")));
+        assert!(env
+            .iter()
+            .any(|e| e.name == "HOME" && e.value.as_deref() == Some("/home/miguel")));
     }
 
     #[test]

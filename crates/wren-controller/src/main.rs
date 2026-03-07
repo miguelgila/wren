@@ -18,9 +18,9 @@ mod node_watcher;
 #[allow(dead_code)]
 mod reaper;
 mod reconciler;
-mod user_identity;
 #[allow(dead_code)]
 mod reservation;
+mod user_identity;
 #[allow(dead_code)]
 mod webhook;
 
@@ -98,7 +98,8 @@ async fn main() -> anyhow::Result<()> {
     let backend = Arc::new(ContainerBackend::new(client.clone()));
 
     // Job ID allocator — counter persisted in a ConfigMap
-    let controller_namespace = std::env::var("WREN_NAMESPACE").unwrap_or_else(|_| "wren-system".to_string());
+    let controller_namespace =
+        std::env::var("WREN_NAMESPACE").unwrap_or_else(|_| "wren-system".to_string());
     let job_id_allocator = JobIdAllocator::new(client.clone(), &controller_namespace);
 
     // Build reconciler context

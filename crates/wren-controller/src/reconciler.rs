@@ -4,7 +4,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use wren_core::backend::{BackendJobStatus, ExecutionBackend};
-use wren_core::{ClusterState, JobState, UserIdentity, WalltimeDuration, WrenError, WrenJob, WrenJobStatus};
+use wren_core::{
+    ClusterState, JobState, UserIdentity, WalltimeDuration, WrenError, WrenJob, WrenJobStatus,
+};
 use wren_scheduler::gang::GangScheduler;
 
 use crate::job_id::JobIdAllocator;
@@ -168,7 +170,11 @@ async fn handle_scheduling(
             }
 
             // Launch via backend
-            match ctx.backend.launch(name, namespace, spec, &placement, user).await {
+            match ctx
+                .backend
+                .launch(name, namespace, spec, &placement, user)
+                .await
+            {
                 Ok(launch_result) => {
                     // Release reservation — resources are now committed
                     {
