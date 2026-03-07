@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use wren_core::backend::{BackendJobStatus, ExecutionBackend};
-use wren_core::{ClusterState, JobState, WalltimeDuration, WrenError, WrenJob, WrenJobStatus};
+use wren_core::{ClusterState, JobState, UserIdentity, WalltimeDuration, WrenError, WrenJob, WrenJobStatus};
 use wren_scheduler::gang::GangScheduler;
 
 use crate::job_id::JobIdAllocator;
@@ -29,16 +29,28 @@ pub async fn reconcile(job: &WrenJob, ctx: &ReconcilerContext) -> Result<(), Wre
     let status = job.status.as_ref().cloned().unwrap_or_default();
     let spec = &job.spec;
 
+    // Resolve user identity from wren.io/user annotation
+    let user = crate::user_identity::resolve_user_identity(
+        &ctx.client,
+        job.metadata.annotations.as_ref(),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        warn!(job = name, error = %e, "failed to resolve user identity, continuing without");
+        None
+    });
+
     info!(
         job = name,
         namespace,
         state = %status.state,
+        user = user.as_ref().map(|u| u.username.as_str()).unwrap_or("<none>"),
         "reconciling WrenJob"
     );
 
     match status.state {
         JobState::Pending => handle_pending(name, namespace, spec, ctx).await,
-        JobState::Scheduling => handle_scheduling(name, namespace, spec, ctx).await,
+        JobState::Scheduling => handle_scheduling(name, namespace, spec, user.as_ref(), ctx).await,
         JobState::Running => handle_running(name, namespace, spec, &status, ctx).await,
         JobState::Succeeded
         | JobState::Failed
@@ -91,6 +103,7 @@ async fn handle_scheduling(
     name: &str,
     namespace: &str,
     spec: &wren_core::WrenJobSpec,
+    user: Option<&UserIdentity>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
     // Attempt gang scheduling
@@ -145,7 +158,7 @@ async fn handle_scheduling(
             }
 
             // Launch via backend
-            match ctx.backend.launch(name, namespace, spec, &placement).await {
+            match ctx.backend.launch(name, namespace, spec, &placement, user).await {
                 Ok(launch_result) => {
                     // Release reservation — resources are now committed
                     {
@@ -522,6 +535,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 

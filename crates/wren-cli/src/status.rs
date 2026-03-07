@@ -111,6 +111,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 

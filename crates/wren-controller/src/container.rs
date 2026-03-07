@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSpec, Service, ServicePort, ServiceSpec,
+    ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSecurityContext, PodSpec, Service,
+    ServicePort, ServiceSpec,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
@@ -12,6 +13,7 @@ use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
 use wren_core::{Placement, WrenError, WrenJobSpec};
 
 use crate::mpi;
+use wren_core::UserIdentity;
 
 /// Returns true if the job needs the full MPI launcher pattern
 /// (headless service + hostfile + worker pods + launcher pod with mpirun).
@@ -80,6 +82,7 @@ pub(crate) fn build_worker_pod(
     spec: &WrenJobSpec,
     node_name: &str,
     rank: u32,
+    user: Option<&UserIdentity>,
 ) -> Result<Pod, WrenError> {
     let pod_name = mpi::worker_pod_name(job_name, rank);
     let labels = mpi::job_labels(job_name, "worker", Some(rank));
@@ -112,6 +115,27 @@ pub(crate) fn build_worker_pod(
         ..Default::default()
     });
 
+    // Inject user identity env vars
+    if let Some(u) = user {
+        env_vars.push(EnvVar {
+            name: "USER".to_string(),
+            value: Some(u.username.clone()),
+            ..Default::default()
+        });
+        env_vars.push(EnvVar {
+            name: "LOGNAME".to_string(),
+            value: Some(u.username.clone()),
+            ..Default::default()
+        });
+        if let Some(home) = &u.home_dir {
+            env_vars.push(EnvVar {
+                name: "HOME".to_string(),
+                value: Some(home.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
     let container = Container {
         name: "worker".to_string(),
         image: Some(container_spec.image.clone()),
@@ -136,6 +160,17 @@ pub(crate) fn build_worker_pod(
 
     let svc_name = mpi::headless_service_name(job_name);
 
+    let security_context = user.map(|u| PodSecurityContext {
+        run_as_user: Some(u.uid as i64),
+        run_as_group: Some(u.gid as i64),
+        supplemental_groups: if u.supplemental_groups.is_empty() {
+            None
+        } else {
+            Some(u.supplemental_groups.iter().map(|g| *g as i64).collect())
+        },
+        ..Default::default()
+    });
+
     Ok(Pod {
         metadata: ObjectMeta {
             name: Some(pod_name.clone()),
@@ -154,6 +189,7 @@ pub(crate) fn build_worker_pod(
             } else {
                 None
             },
+            security_context,
             ..Default::default()
         }),
         ..Default::default()
@@ -166,6 +202,7 @@ pub(crate) fn build_launcher_pod(
     namespace: &str,
     spec: &WrenJobSpec,
     placement: &Placement,
+    user: Option<&UserIdentity>,
 ) -> Result<Pod, WrenError> {
     let pod_name = mpi::launcher_pod_name(job_name);
     let labels = mpi::job_labels(job_name, "launcher", None);
@@ -188,7 +225,7 @@ pub(crate) fn build_launcher_pod(
         command.extend(container_spec.args.clone());
     }
 
-    let env_vars = vec![
+    let mut env_vars = vec![
         EnvVar {
             name: "WREN_JOB_NAME".to_string(),
             value: Some(job_name.to_string()),
@@ -206,6 +243,27 @@ pub(crate) fn build_launcher_pod(
         },
     ];
 
+    // Inject user identity env vars
+    if let Some(u) = user {
+        env_vars.push(EnvVar {
+            name: "USER".to_string(),
+            value: Some(u.username.clone()),
+            ..Default::default()
+        });
+        env_vars.push(EnvVar {
+            name: "LOGNAME".to_string(),
+            value: Some(u.username.clone()),
+            ..Default::default()
+        });
+        if let Some(home) = &u.home_dir {
+            env_vars.push(EnvVar {
+                name: "HOME".to_string(),
+                value: Some(home.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
     let container = Container {
         name: "launcher".to_string(),
         image: Some(container_spec.image.clone()),
@@ -216,6 +274,17 @@ pub(crate) fn build_launcher_pod(
 
     // Launch on the first node in the placement
     let launcher_node = placement.nodes.first().cloned();
+
+    let security_context = user.map(|u| PodSecurityContext {
+        run_as_user: Some(u.uid as i64),
+        run_as_group: Some(u.gid as i64),
+        supplemental_groups: if u.supplemental_groups.is_empty() {
+            None
+        } else {
+            Some(u.supplemental_groups.iter().map(|g| *g as i64).collect())
+        },
+        ..Default::default()
+    });
 
     Ok(Pod {
         metadata: ObjectMeta {
@@ -228,6 +297,7 @@ pub(crate) fn build_launcher_pod(
             containers: vec![container],
             node_name: launcher_node,
             restart_policy: Some("Never".to_string()),
+            security_context,
             ..Default::default()
         }),
         ..Default::default()
@@ -384,9 +454,10 @@ impl ContainerBackend {
         spec: &WrenJobSpec,
         node_name: &str,
         rank: u32,
+        user: Option<&UserIdentity>,
     ) -> Result<String, WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let pod = build_worker_pod(job_name, namespace, spec, node_name, rank)?;
+        let pod = build_worker_pod(job_name, namespace, spec, node_name, rank, user)?;
         let pod_name = pod.metadata.name.clone().unwrap_or_default();
         match pod_api.create(&PostParams::default(), &pod).await {
             Ok(_) => debug!(pod = %pod_name, node = %node_name, rank, "created worker pod"),
@@ -406,9 +477,10 @@ impl ContainerBackend {
         namespace: &str,
         spec: &WrenJobSpec,
         placement: &Placement,
+        user: Option<&UserIdentity>,
     ) -> Result<String, WrenError> {
         let pod_api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let pod = build_launcher_pod(job_name, namespace, spec, placement)?;
+        let pod = build_launcher_pod(job_name, namespace, spec, placement, user)?;
         let pod_name = pod.metadata.name.clone().unwrap_or_default();
         match pod_api.create(&PostParams::default(), &pod).await {
             Ok(_) => debug!(pod = %pod_name, "created launcher pod"),
@@ -429,6 +501,7 @@ impl ExecutionBackend for ContainerBackend {
         namespace: &str,
         spec: &WrenJobSpec,
         placement: &Placement,
+        user: Option<&UserIdentity>,
     ) -> Result<LaunchResult, WrenError> {
         let use_launcher = needs_mpi_launcher(spec);
 
@@ -446,14 +519,14 @@ impl ExecutionBackend for ContainerBackend {
             let mut resource_ids = Vec::new();
             for (rank, node) in placement.nodes.iter().enumerate() {
                 let pod_name = self
-                    .create_worker_pod(job_name, namespace, spec, node, rank as u32)
+                    .create_worker_pod(job_name, namespace, spec, node, rank as u32, user)
                     .await?;
                 resource_ids.push(pod_name);
             }
 
             // 4. Create launcher pod
             let launcher = self
-                .create_launcher_pod(job_name, namespace, spec, placement)
+                .create_launcher_pod(job_name, namespace, spec, placement, user)
                 .await?;
             resource_ids.push(launcher);
 
@@ -472,7 +545,7 @@ impl ExecutionBackend for ContainerBackend {
             let mut resource_ids = Vec::new();
             for (rank, node) in placement.nodes.iter().enumerate() {
                 let pod_name = self
-                    .create_worker_pod(job_name, namespace, spec, node, rank as u32)
+                    .create_worker_pod(job_name, namespace, spec, node, rank as u32, user)
                     .await?;
                 resource_ids.push(pod_name);
             }
@@ -563,6 +636,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 
@@ -591,6 +665,7 @@ mod tests {
             }),
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 
@@ -731,7 +806,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_name_and_labels() {
         let spec = make_spec_no_mpi();
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         assert_eq!(pod.metadata.name.as_deref(), Some("my-job-worker-0"));
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["wren.giar.dev/job-name"], "my-job");
@@ -742,7 +817,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_node_affinity() {
         let spec = make_spec_no_mpi();
-        let pod = build_worker_pod("my-job", "default", &spec, "node-42", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-42", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.node_name.as_deref(), Some("node-42"));
     }
@@ -750,7 +825,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_env_vars() {
         let spec = make_spec_no_mpi();
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 3).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 3, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         let env = pod_spec.containers[0].env.as_ref().unwrap();
         let rank_var = env.iter().find(|e| e.name == "WREN_RANK").unwrap();
@@ -774,7 +849,7 @@ mod tests {
                 value: "hello".to_string(),
             }],
         });
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         let env = pod_spec.containers[0].env.as_ref().unwrap();
         let user_var = env.iter().find(|e| e.name == "MY_VAR").unwrap();
@@ -785,7 +860,7 @@ mod tests {
     fn test_build_worker_pod_host_network_true() {
         let mut spec = make_spec_no_mpi();
         spec.container.as_mut().unwrap().host_network = true;
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.host_network, Some(true));
     }
@@ -793,7 +868,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_host_network_false() {
         let spec = make_spec_no_mpi(); // host_network = false
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.host_network, None);
     }
@@ -802,7 +877,7 @@ mod tests {
     fn test_build_worker_pod_no_container_spec() {
         let mut spec = make_spec_no_mpi();
         spec.container = None;
-        let result = build_worker_pod("my-job", "default", &spec, "node-0", 0);
+        let result = build_worker_pod("my-job", "default", &spec, "node-0", 0, None);
         assert!(matches!(result, Err(WrenError::ValidationError { .. })));
     }
 
@@ -810,7 +885,7 @@ mod tests {
     fn test_build_worker_pod_empty_command() {
         let mut spec = make_spec_no_mpi();
         spec.container.as_mut().unwrap().command = vec![];
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.containers[0].command, None);
     }
@@ -818,7 +893,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_with_command() {
         let spec = make_spec_no_mpi(); // command = ["sleep", "infinity"]
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(
             pod_spec.containers[0].command,
@@ -829,7 +904,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_restart_policy() {
         let spec = make_spec_no_mpi();
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.restart_policy.as_deref(), Some("Never"));
     }
@@ -837,7 +912,7 @@ mod tests {
     #[test]
     fn test_build_worker_pod_subdomain() {
         let spec = make_spec_no_mpi();
-        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0).unwrap();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.subdomain.as_deref(), Some("my-job-workers"));
     }
@@ -848,7 +923,7 @@ mod tests {
     fn test_build_launcher_pod_name_and_labels() {
         let spec = make_spec_with_mpi();
         let placement = make_placement(&["node-0", "node-1"]);
-        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement, None).unwrap();
         assert_eq!(pod.metadata.name.as_deref(), Some("my-job-launcher"));
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["wren.giar.dev/role"], "launcher");
@@ -860,7 +935,7 @@ mod tests {
     fn test_build_launcher_pod_mpirun_command() {
         let spec = make_spec_with_mpi();
         let placement = make_placement(&["node-0", "node-1"]);
-        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         let cmd = pod_spec.containers[0].command.as_ref().unwrap();
         assert_eq!(cmd[0], "mpirun");
@@ -872,7 +947,7 @@ mod tests {
     fn test_build_launcher_pod_env_vars() {
         let spec = make_spec_with_mpi();
         let placement = make_placement(&["node-0", "node-1", "node-2", "node-3"]);
-        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         let env = pod_spec.containers[0].env.as_ref().unwrap();
         let job_name_var = env.iter().find(|e| e.name == "WREN_JOB_NAME").unwrap();
@@ -887,7 +962,7 @@ mod tests {
     fn test_build_launcher_pod_node_placement() {
         let spec = make_spec_with_mpi();
         let placement = make_placement(&["first-node", "second-node"]);
-        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         assert_eq!(pod_spec.node_name.as_deref(), Some("first-node"));
     }
@@ -897,7 +972,7 @@ mod tests {
         let mut spec = make_spec_with_mpi();
         spec.container = None;
         let placement = make_placement(&["node-0"]);
-        let result = build_launcher_pod("my-job", "default", &spec, &placement);
+        let result = build_launcher_pod("my-job", "default", &spec, &placement, None);
         assert!(matches!(result, Err(WrenError::ValidationError { .. })));
     }
 
@@ -907,7 +982,7 @@ mod tests {
         spec.container.as_mut().unwrap().command = vec!["./my_app".to_string()];
         spec.container.as_mut().unwrap().args = vec!["--input".to_string(), "data.h5".to_string()];
         let placement = make_placement(&["node-0"]);
-        let pod = build_launcher_pod("my-job", "default", &spec, &placement).unwrap();
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement, None).unwrap();
         let pod_spec = pod.spec.unwrap();
         let cmd = pod_spec.containers[0].command.as_ref().unwrap();
         // mpirun args come first, then user command/args
@@ -1009,5 +1084,99 @@ mod tests {
             interpret_pod_status(&pods),
             BackendJobStatus::Launching { ready: 0, total: 2 }
         );
+    }
+
+    // --- user identity tests ---
+
+    fn make_user_identity() -> UserIdentity {
+        UserIdentity {
+            username: "miguel".to_string(),
+            uid: 1001,
+            gid: 1001,
+            supplemental_groups: vec![1001, 5000],
+            home_dir: Some("/home/miguel".to_string()),
+            default_project: Some("climate-sim".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_build_worker_pod_with_user_identity_sets_security_context() {
+        let spec = make_spec_no_mpi();
+        let user = make_user_identity();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, Some(&user)).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let sc = pod_spec.security_context.unwrap();
+        assert_eq!(sc.run_as_user, Some(1001));
+        assert_eq!(sc.run_as_group, Some(1001));
+        assert_eq!(sc.supplemental_groups, Some(vec![1001, 5000]));
+    }
+
+    #[test]
+    fn test_build_worker_pod_with_user_identity_sets_env_vars() {
+        let spec = make_spec_no_mpi();
+        let user = make_user_identity();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, Some(&user)).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        let user_var = env.iter().find(|e| e.name == "USER").unwrap();
+        assert_eq!(user_var.value.as_deref(), Some("miguel"));
+        let logname_var = env.iter().find(|e| e.name == "LOGNAME").unwrap();
+        assert_eq!(logname_var.value.as_deref(), Some("miguel"));
+        let home_var = env.iter().find(|e| e.name == "HOME").unwrap();
+        assert_eq!(home_var.value.as_deref(), Some("/home/miguel"));
+    }
+
+    #[test]
+    fn test_build_worker_pod_without_user_no_security_context() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert!(pod_spec.security_context.is_none());
+    }
+
+    #[test]
+    fn test_build_worker_pod_without_user_no_user_env_vars() {
+        let spec = make_spec_no_mpi();
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, None).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        assert!(env.iter().all(|e| e.name != "USER"));
+        assert!(env.iter().all(|e| e.name != "LOGNAME"));
+        assert!(env.iter().all(|e| e.name != "HOME"));
+    }
+
+    #[test]
+    fn test_build_launcher_pod_with_user_identity() {
+        let spec = make_spec_with_mpi();
+        let placement = make_placement(&["node-0", "node-1"]);
+        let user = make_user_identity();
+        let pod = build_launcher_pod("my-job", "default", &spec, &placement, Some(&user)).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let sc = pod_spec.security_context.unwrap();
+        assert_eq!(sc.run_as_user, Some(1001));
+        assert_eq!(sc.run_as_group, Some(1001));
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        assert!(env.iter().any(|e| e.name == "USER" && e.value.as_deref() == Some("miguel")));
+        assert!(env.iter().any(|e| e.name == "HOME" && e.value.as_deref() == Some("/home/miguel")));
+    }
+
+    #[test]
+    fn test_build_worker_pod_user_no_home_dir() {
+        let spec = make_spec_no_mpi();
+        let user = UserIdentity {
+            username: "test".to_string(),
+            uid: 2000,
+            gid: 2000,
+            supplemental_groups: vec![],
+            home_dir: None,
+            default_project: None,
+        };
+        let pod = build_worker_pod("my-job", "default", &spec, "node-0", 0, Some(&user)).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let env = pod_spec.containers[0].env.as_ref().unwrap();
+        assert!(env.iter().any(|e| e.name == "USER"));
+        assert!(env.iter().all(|e| e.name != "HOME"));
+        let sc = pod_spec.security_context.unwrap();
+        assert!(sc.supplemental_groups.is_none());
     }
 }

@@ -17,6 +17,10 @@ rules:
   - apiGroups: ["wren.giar.dev"]
     resources: ["wrenqueues"]
     verbs: ["get", "list", "watch"]
+  # WrenUser CRD access (user identity resolution)
+  - apiGroups: ["wren.giar.dev"]
+    resources: ["wrenusers"]
+    verbs: ["get", "list", "watch"]
   # Pod management for MPI workers/launcher
   - apiGroups: [""]
     resources: ["pods", "pods/log"]

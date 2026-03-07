@@ -18,6 +18,7 @@ mod node_watcher;
 #[allow(dead_code)]
 mod reaper;
 mod reconciler;
+mod user_identity;
 #[allow(dead_code)]
 mod reservation;
 #[allow(dead_code)]

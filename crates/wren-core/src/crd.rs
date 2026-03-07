@@ -63,6 +63,10 @@ pub struct WrenJobSpec {
     /// Job dependencies (Slurm-style)
     #[serde(default)]
     pub dependencies: Vec<JobDependency>,
+
+    /// Project for fair-share grouping (optional, user-settable)
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
@@ -223,6 +227,35 @@ pub struct FairShareConfig {
     /// Usage history decay half-life (e.g., "7d")
     #[serde(default)]
     pub decay_half_life: Option<String>,
+}
+
+/// WrenUser maps Kubernetes usernames to Unix UID/GID for execution identity.
+/// Cluster-scoped — one per user across all namespaces.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "wren.giar.dev",
+    version = "v1alpha1",
+    kind = "WrenUser",
+    printcolumn = r#"{"name":"UID","type":"integer","jsonPath":".spec.uid"}"#,
+    printcolumn = r#"{"name":"GID","type":"integer","jsonPath":".spec.gid"}"#,
+    printcolumn = r#"{"name":"HomeDir","type":"string","jsonPath":".spec.homeDir"}"#,
+    printcolumn = r#"{"name":"Project","type":"string","jsonPath":".spec.defaultProject"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct WrenUserSpec {
+    /// Unix UID for process execution
+    pub uid: u32,
+    /// Primary Unix GID
+    pub gid: u32,
+    /// Additional GIDs (e.g., project groups)
+    #[serde(default)]
+    pub supplemental_groups: Vec<u32>,
+    /// HOME env var and optional volume mount path
+    #[serde(default)]
+    pub home_dir: Option<String>,
+    /// Default project for fair-share grouping
+    #[serde(default)]
+    pub default_project: Option<String>,
 }
 
 // --- Simple placeholder types to avoid pulling in full k8s_openapi for CRD schema ---
@@ -582,5 +615,72 @@ mod tests {
         let topo = spec.topology.unwrap();
         assert!(topo.prefer_same_switch);
         assert_eq!(topo.max_hops, Some(2));
+    }
+
+    // --- WrenUser tests ---
+
+    #[test]
+    fn test_wrenuser_spec_serde() {
+        let yaml = r#"
+            uid: 1001
+            gid: 1001
+            supplementalGroups: [1001, 5000]
+            homeDir: /home/miguel
+            defaultProject: climate-sim
+        "#;
+        let spec: WrenUserSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.uid, 1001);
+        assert_eq!(spec.gid, 1001);
+        assert_eq!(spec.supplemental_groups, vec![1001, 5000]);
+        assert_eq!(spec.home_dir.as_deref(), Some("/home/miguel"));
+        assert_eq!(spec.default_project.as_deref(), Some("climate-sim"));
+    }
+
+    #[test]
+    fn test_wrenuser_spec_minimal() {
+        let yaml = r#"
+            uid: 2000
+            gid: 2000
+        "#;
+        let spec: WrenUserSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.uid, 2000);
+        assert_eq!(spec.gid, 2000);
+        assert!(spec.supplemental_groups.is_empty());
+        assert!(spec.home_dir.is_none());
+        assert!(spec.default_project.is_none());
+    }
+
+    #[test]
+    fn test_wrenuser_spec_roundtrip() {
+        let spec = WrenUserSpec {
+            uid: 1001,
+            gid: 1001,
+            supplemental_groups: vec![1001, 5000],
+            home_dir: Some("/home/miguel".to_string()),
+            default_project: Some("climate-sim".to_string()),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let parsed: WrenUserSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.uid, 1001);
+        assert_eq!(parsed.supplemental_groups, vec![1001, 5000]);
+    }
+
+    // --- project field tests ---
+
+    #[test]
+    fn test_wrenjob_spec_with_project() {
+        let yaml = r#"
+            nodes: 2
+            project: climate-sim
+        "#;
+        let spec: WrenJobSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.project.as_deref(), Some("climate-sim"));
+    }
+
+    #[test]
+    fn test_wrenjob_spec_without_project() {
+        let json = r#"{"nodes": 4}"#;
+        let spec: WrenJobSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.project.is_none());
     }
 }

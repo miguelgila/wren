@@ -17,6 +17,18 @@ pub struct AdmissionReview<T> {
 pub struct AdmissionRequest<T> {
     pub uid: String,
     pub object: T,
+    /// UserInfo from the K8s API server (populated for mutating webhooks).
+    #[serde(default)]
+    pub user_info: Option<UserInfo>,
+}
+
+/// K8s UserInfo from the API request context.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInfo {
+    pub username: Option<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -34,6 +46,12 @@ pub struct AdmissionResponseBody {
     pub allowed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<AdmissionStatus>,
+    /// Base64-encoded JSON Patch for mutating webhooks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    /// Must be "JSONPatch" when patch is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -167,6 +185,8 @@ fn admission_allowed(uid: String) -> AdmissionResponse {
             uid,
             allowed: true,
             status: None,
+            patch: None,
+            patch_type: None,
         },
     }
 }
@@ -180,8 +200,64 @@ fn admission_denied(uid: String, errors: Vec<String>) -> AdmissionResponse {
             uid,
             allowed: false,
             status: Some(AdmissionStatus { code: 422, message }),
+            patch: None,
+            patch_type: None,
         },
     }
+}
+
+/// Build a mutating admission response that stamps `wren.io/user` annotation.
+fn admission_mutate_user(uid: String, username: &str) -> AdmissionResponse {
+    use base64::Engine;
+
+    let patch = serde_json::json!([
+        {
+            "op": "add",
+            "path": "/metadata/annotations",
+            "value": {}
+        },
+        {
+            "op": "add",
+            "path": "/metadata/annotations/wren.io~1user",
+            "value": username
+        }
+    ]);
+    let patch_json = serde_json::to_string(&patch).unwrap_or_default();
+    let patch_b64 = base64::engine::general_purpose::STANDARD.encode(patch_json.as_bytes());
+
+    AdmissionResponse {
+        api_version: "admission.k8s.io/v1".to_string(),
+        kind: "AdmissionReview".to_string(),
+        response: AdmissionResponseBody {
+            uid,
+            allowed: true,
+            status: None,
+            patch: Some(patch_b64),
+            patch_type: Some("JSONPatch".to_string()),
+        },
+    }
+}
+
+/// Mutating webhook handler: stamps `wren.io/user` from the K8s API UserInfo.
+async fn mutate_wrenjob_handler(
+    Json(review): Json<AdmissionReview<serde_json::Value>>,
+) -> (StatusCode, Json<AdmissionResponse>) {
+    let uid = review.request.uid.clone();
+
+    let username = review
+        .request
+        .user_info
+        .as_ref()
+        .and_then(|ui| ui.username.as_deref())
+        .unwrap_or("");
+
+    if username.is_empty() {
+        info!(uid, "mutating webhook: no username in UserInfo, allowing without mutation");
+        return (StatusCode::OK, Json(admission_allowed(uid)));
+    }
+
+    info!(uid, user = username, "mutating webhook: stamping wren.io/user");
+    (StatusCode::OK, Json(admission_mutate_user(uid, username)))
 }
 
 async fn validate_wrenjob_handler(
@@ -229,6 +305,7 @@ pub fn webhook_router() -> Router {
     Router::new()
         .route("/validate/wrenjob", post(validate_wrenjob_handler))
         .route("/validate/wrenqueue", post(validate_wrenqueue_handler))
+        .route("/mutate/wrenjob", post(mutate_wrenjob_handler))
         .route("/healthz", get(health_handler))
 }
 
@@ -277,6 +354,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 
@@ -459,6 +537,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         };
         let errs = validate_wrenjob(&spec).unwrap_err();
         assert!(errs.len() >= 4, "expected multiple errors, got: {:?}", errs);
@@ -758,5 +837,102 @@ mod tests {
 
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body_bytes[..], b"ok");
+    }
+
+    // --- mutating webhook tests ---
+
+    #[test]
+    fn test_admission_mutate_user_response() {
+        let resp = admission_mutate_user("uid-mut".to_string(), "miguel");
+        assert!(resp.response.allowed);
+        assert!(resp.response.patch.is_some());
+        assert_eq!(resp.response.patch_type.as_deref(), Some("JSONPatch"));
+
+        // Decode and verify the patch
+        use base64::Engine;
+        let patch_b64 = resp.response.patch.unwrap();
+        let patch_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&patch_b64)
+            .unwrap();
+        let patch: serde_json::Value = serde_json::from_slice(&patch_bytes).unwrap();
+        let ops = patch.as_array().unwrap();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[1]["op"], "add");
+        assert_eq!(ops[1]["path"], "/metadata/annotations/wren.io~1user");
+        assert_eq!(ops[1]["value"], "miguel");
+    }
+
+    #[tokio::test]
+    async fn test_mutate_wrenjob_with_user_info() {
+        let app = webhook_router();
+
+        let body = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "mut-uid-1",
+                "object": {
+                    "apiVersion": "wren.giar.dev/v1alpha1",
+                    "kind": "WrenJob",
+                    "metadata": { "name": "test-job" },
+                    "spec": { "nodes": 2 }
+                },
+                "userInfo": {
+                    "username": "miguel",
+                    "groups": ["system:authenticated"]
+                }
+            }
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mutate/wrenjob")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp: AdmissionResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.response.allowed);
+        assert!(resp.response.patch.is_some());
+        assert_eq!(resp.response.patch_type.as_deref(), Some("JSONPatch"));
+    }
+
+    #[tokio::test]
+    async fn test_mutate_wrenjob_without_user_info() {
+        let app = webhook_router();
+
+        let body = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "mut-uid-2",
+                "object": {
+                    "apiVersion": "wren.giar.dev/v1alpha1",
+                    "kind": "WrenJob",
+                    "metadata": { "name": "test-job" },
+                    "spec": { "nodes": 2 }
+                }
+            }
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mutate/wrenjob")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), AxumStatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp: AdmissionResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.response.allowed);
+        // No patch when no user info
+        assert!(resp.response.patch.is_none());
     }
 }

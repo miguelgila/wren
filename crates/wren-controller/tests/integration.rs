@@ -80,6 +80,7 @@ fn build_wrenjob(name: &str, namespace: &str, nodes: u32) -> WrenJob {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     }
@@ -597,6 +598,7 @@ fn build_wrenjob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     }
@@ -640,6 +642,7 @@ fn build_wrenjob_with_topology(
                 topology_key: None,
             }),
             dependencies: vec![],
+            project: None,
         },
         status: None,
     }
@@ -806,6 +809,7 @@ async fn test_job_runs_to_completion() {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     };
@@ -1848,6 +1852,7 @@ async fn test_container_backend_required_for_container_job() {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     };
