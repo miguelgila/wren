@@ -7,6 +7,7 @@
 #   ./scripts/run-integration-tests.sh --no-cleanup        # Keep kind cluster after run
 #   ./scripts/run-integration-tests.sh --verbose           # Print verbose output to stdout
 #   ./scripts/run-integration-tests.sh --only-cli          # Run only CLI integration tests
+#   ./scripts/run-integration-tests.sh --usertests-only    # Run only multi-user identity tests
 #
 # Environment variables (override defaults):
 #   IMAGE_TAG=<tag>          — controller image tag (default: latest)
@@ -15,7 +16,7 @@
 #   TEST_NAMESPACE=<ns>      — namespace for test jobs (default: default)
 #   CONTROLLER_TIMEOUT=<s>   — seconds to wait for controller ready (default: 120)
 #   JOB_TIMEOUT=<s>          — seconds to wait for job status (default: 90)
-#   TESTS=rust|shell|all     — which test suites to run (default: all)
+#   TESTS=rust|shell|cli|user|all — which test suites to run (default: all)
 
 set -euo pipefail
 
@@ -54,6 +55,7 @@ SKIP_CARGO=false
 NO_CLEANUP=false
 VERBOSE=false
 ONLY_CLI=false
+ONLY_USER=false
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -64,30 +66,35 @@ while [[ $# -gt 0 ]]; do
     --no-cleanup)  NO_CLEANUP=true; shift ;;
     --verbose)     VERBOSE=true; shift ;;
     --only-cli)    ONLY_CLI=true; shift ;;
+    --usertests-only) ONLY_USER=true; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli]"
-      echo "  --skip-cargo  Skip cargo build and Rust integration tests"
-      echo "  --no-cleanup  Keep kind cluster after run"
-      echo "  --verbose     Also print verbose output to stdout"
-      echo "  --only-cli    Run only CLI integration tests (requires running cluster)"
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli] [--usertests-only]"
+      echo "  --skip-cargo      Skip cargo build and Rust integration tests"
+      echo "  --no-cleanup      Keep kind cluster after run"
+      echo "  --verbose         Also print verbose output to stdout"
+      echo "  --only-cli        Run only CLI integration tests (requires running cluster)"
+      echo "  --usertests-only  Run only multi-user identity integration tests"
       echo ""
       echo "Environment variables:"
       echo "  CLUSTER_NAME   Kind cluster name (default: wren-test)"
       echo "  IMAGE_TAG      Controller image tag (default: latest)"
-      echo "  TESTS          Test suites: rust|shell|cli|all (default: all)"
+      echo "  TESTS          Test suites: rust|shell|cli|user|all (default: all)"
       echo "  JOB_TIMEOUT    Seconds to wait for job status (default: 90)"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli]" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli] [--usertests-only]" >&2
       exit 1
       ;;
   esac
 done
 
 # Apply flag effects to config variables
-if $ONLY_CLI; then
+if $ONLY_USER; then
+  TESTS="user"
+  SKIP_BUILD="${SKIP_BUILD:-0}"
+elif $ONLY_CLI; then
   TESTS="cli"
   SKIP_BUILD="${SKIP_BUILD:-0}"
 elif $SKIP_CARGO; then
@@ -204,7 +211,7 @@ check_prereqs() {
     local required_cmds=(kind kubectl docker)
 
     # cargo is required when running Rust tests or CLI tests (to build the binary)
-    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" || "$TESTS" == "all" ]]; then
+    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" || "$TESTS" == "user" || "$TESTS" == "all" ]]; then
         required_cmds+=(cargo)
     fi
 
@@ -525,7 +532,7 @@ wait_for_controller() {
 run_rust_tests() {
     section "Running Rust integration tests (cargo test --ignored)"
 
-    if [[ "$TESTS" == "shell" || "$TESTS" == "cli" ]]; then
+    if [[ "$TESTS" == "shell" || "$TESTS" == "cli" || "$TESTS" == "user" ]]; then
         record_skip "Rust integration tests (TESTS=${TESTS})"
         return
     fi
@@ -1365,6 +1372,866 @@ smoke_test_job_logs() {
 }
 
 # ===========================================================================
+# Multi-user identity integration tests
+#
+# These tests exercise Phase 5.1 multi-user identity support: WrenUser CRDs,
+# user annotation on jobs, securityContext (runAsUser/runAsGroup) on pods,
+# USER/LOGNAME/HOME env vars, supplemental groups, and graceful degradation
+# when WrenUser is missing.
+# ===========================================================================
+
+# Helper: create a WrenUser CRD and wait for it to be retrievable.
+create_wrenuser() {
+    local name="$1"
+    local uid="$2"
+    local gid="$3"
+    local home_dir="${4:-}"
+    local project="${5:-}"
+    local extra_groups="${6:-}"  # comma-separated, e.g. "5000,6000"
+
+    local supp_groups_yaml=""
+    if [[ -n "$extra_groups" ]]; then
+        supp_groups_yaml="  supplementalGroups:"
+        IFS=',' read -ra groups <<< "$extra_groups"
+        for g in "${groups[@]}"; do
+            supp_groups_yaml="${supp_groups_yaml}
+    - ${g}"
+        done
+    fi
+
+    local home_yaml=""
+    if [[ -n "$home_dir" ]]; then
+        home_yaml="  homeDir: \"${home_dir}\""
+    fi
+
+    local project_yaml=""
+    if [[ -n "$project" ]]; then
+        project_yaml="  defaultProject: \"${project}\""
+    fi
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: ${name}
+spec:
+  uid: ${uid}
+  gid: ${gid}
+${supp_groups_yaml}
+${home_yaml}
+${project_yaml}
+EOF
+}
+
+# Helper: delete a WrenUser CRD quietly.
+delete_wrenuser() {
+    local name="$1"
+    kubectl delete wrenuser "${name}" --ignore-not-found 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# User test 1: WrenUser CRD CRUD — create, retrieve, verify fields, delete.
+# ---------------------------------------------------------------------------
+_user_test_crd_crud() {
+    local user_name="test-user-crud"
+    local errors=0
+
+    log "Creating WrenUser '${user_name}' ..."
+    create_wrenuser "${user_name}" 2001 2001 "/home/${user_name}" "test-project" "2001,7000"
+
+    # Verify it exists and has correct fields
+    local retrieved_uid
+    retrieved_uid=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.uid}' 2>/dev/null || echo "")
+    if [[ "$retrieved_uid" != "2001" ]]; then
+        error "WrenUser uid mismatch: expected 2001, got '${retrieved_uid}'"
+        errors=$(( errors + 1 ))
+    else
+        log "  uid: ${retrieved_uid} (correct)"
+    fi
+
+    local retrieved_gid
+    retrieved_gid=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.gid}' 2>/dev/null || echo "")
+    if [[ "$retrieved_gid" != "2001" ]]; then
+        error "WrenUser gid mismatch: expected 2001, got '${retrieved_gid}'"
+        errors=$(( errors + 1 ))
+    else
+        log "  gid: ${retrieved_gid} (correct)"
+    fi
+
+    local retrieved_home
+    retrieved_home=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.homeDir}' 2>/dev/null || echo "")
+    if [[ "$retrieved_home" != "/home/${user_name}" ]]; then
+        error "WrenUser homeDir mismatch: expected '/home/${user_name}', got '${retrieved_home}'"
+        errors=$(( errors + 1 ))
+    else
+        log "  homeDir: ${retrieved_home} (correct)"
+    fi
+
+    local retrieved_project
+    retrieved_project=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.defaultProject}' 2>/dev/null || echo "")
+    if [[ "$retrieved_project" != "test-project" ]]; then
+        error "WrenUser defaultProject mismatch: expected 'test-project', got '${retrieved_project}'"
+        errors=$(( errors + 1 ))
+    else
+        log "  defaultProject: ${retrieved_project} (correct)"
+    fi
+
+    # Verify supplemental groups
+    local retrieved_groups
+    retrieved_groups=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.supplementalGroups}' 2>/dev/null || echo "")
+    log "  supplementalGroups: ${retrieved_groups}"
+
+    # Verify print columns show up in table output
+    local table_output
+    table_output=$(kubectl get wrenuser "${user_name}" 2>/dev/null || echo "")
+    log "  kubectl get output:"
+    log "  ${table_output}"
+
+    if [[ "$table_output" == *"2001"* ]]; then
+        log "  UID visible in table output"
+    else
+        warn "UID not visible in kubectl get wrenuser table"
+    fi
+
+    # Clean up
+    delete_wrenuser "${user_name}"
+
+    # Verify deletion
+    if kubectl get wrenuser "${user_name}" &>/dev/null; then
+        error "WrenUser '${user_name}' still exists after deletion"
+        errors=$(( errors + 1 ))
+    else
+        log "  WrenUser successfully deleted"
+    fi
+
+    [[ "$errors" -eq 0 ]]
+}
+
+user_test_crd_crud() {
+    run_test "WrenUser CRD CRUD (create, read, delete)" _user_test_crd_crud
+}
+
+# ---------------------------------------------------------------------------
+# User test 2: WrenUser minimal — only required fields (uid, gid).
+# ---------------------------------------------------------------------------
+_user_test_crd_minimal() {
+    local user_name="test-user-minimal"
+
+    log "Creating minimal WrenUser (uid/gid only) ..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: ${user_name}
+spec:
+  uid: 3001
+  gid: 3001
+EOF
+
+    local retrieved_uid
+    retrieved_uid=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.uid}' 2>/dev/null || echo "")
+    if [[ "$retrieved_uid" != "3001" ]]; then
+        error "Minimal WrenUser uid mismatch: expected 3001, got '${retrieved_uid}'"
+        delete_wrenuser "${user_name}"
+        return 1
+    fi
+
+    # Optional fields should be absent/null
+    local retrieved_home
+    retrieved_home=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.homeDir}' 2>/dev/null || echo "")
+    if [[ -z "$retrieved_home" || "$retrieved_home" == "null" ]]; then
+        log "  homeDir correctly absent"
+    else
+        warn "homeDir unexpectedly set: '${retrieved_home}'"
+    fi
+
+    local retrieved_project
+    retrieved_project=$(kubectl get wrenuser "${user_name}" \
+        -o jsonpath='{.spec.defaultProject}' 2>/dev/null || echo "")
+    if [[ -z "$retrieved_project" || "$retrieved_project" == "null" ]]; then
+        log "  defaultProject correctly absent"
+    else
+        warn "defaultProject unexpectedly set: '${retrieved_project}'"
+    fi
+
+    delete_wrenuser "${user_name}"
+    return 0
+}
+
+user_test_crd_minimal() {
+    run_test "WrenUser CRD with minimal fields" _user_test_crd_minimal
+}
+
+# ---------------------------------------------------------------------------
+# User test 3: Job with user annotation + WrenUser → pod securityContext.
+# Verifies runAsUser, runAsGroup, and supplementalGroups on the pod.
+# ---------------------------------------------------------------------------
+_user_test_pod_security_context() {
+    local user_name="test-user-secctx"
+    local job_name="user-secctx-job"
+    local errors=0
+
+    # Create the WrenUser first
+    create_wrenuser "${user_name}" 4001 4001 "/home/${user_name}" "" "4001,8000"
+
+    # Submit a job annotated with the user
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.io/user: "${user_name}"
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "id && sleep 30"]
+EOF
+
+    # Wait for job to progress and pods to appear
+    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
+        warn "Job did not progress — cannot verify securityContext"
+        delete_job "${job_name}"
+        delete_wrenuser "${user_name}"
+        return 1
+    fi
+
+    # Wait for worker pod to appear
+    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+    local pod_name=""
+    while true; do
+        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+            -l "wren.giar.dev/job-name=${job_name}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then
+            break
+        fi
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            warn "No pod found for job '${job_name}'"
+            delete_job "${job_name}"
+            delete_wrenuser "${user_name}"
+            return 1
+        fi
+        sleep 3
+    done
+
+    log "  Found pod: ${pod_name}"
+
+    # Check runAsUser
+    local run_as_user
+    run_as_user=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
+    if [[ "$run_as_user" == "4001" ]]; then
+        log "  runAsUser: ${run_as_user} (correct)"
+    else
+        error "runAsUser mismatch: expected 4001, got '${run_as_user}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Check runAsGroup
+    local run_as_group
+    run_as_group=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.securityContext.runAsGroup}' 2>/dev/null || echo "")
+    if [[ "$run_as_group" == "4001" ]]; then
+        log "  runAsGroup: ${run_as_group} (correct)"
+    else
+        error "runAsGroup mismatch: expected 4001, got '${run_as_group}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Check supplementalGroups
+    local supp_groups
+    supp_groups=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.securityContext.supplementalGroups}' 2>/dev/null || echo "")
+    log "  supplementalGroups: ${supp_groups}"
+    if [[ "$supp_groups" == *"4001"* && "$supp_groups" == *"8000"* ]]; then
+        log "  supplementalGroups contain expected values (correct)"
+    else
+        error "supplementalGroups missing expected values 4001,8000: got '${supp_groups}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    delete_job "${job_name}"
+    delete_wrenuser "${user_name}"
+    [[ "$errors" -eq 0 ]]
+}
+
+user_test_pod_security_context() {
+    run_test "pod securityContext from WrenUser (runAsUser/runAsGroup)" _user_test_pod_security_context
+}
+
+# ---------------------------------------------------------------------------
+# User test 4: Job with user annotation → USER/LOGNAME/HOME env vars on pod.
+# ---------------------------------------------------------------------------
+_user_test_pod_env_vars() {
+    local user_name="test-user-env"
+    local job_name="user-env-job"
+    local errors=0
+
+    create_wrenuser "${user_name}" 5001 5001 "/home/${user_name}" "envtest-project"
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.io/user: "${user_name}"
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo USER=\$USER LOGNAME=\$LOGNAME HOME=\$HOME && sleep 30"]
+EOF
+
+    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
+        warn "Job did not progress"
+        delete_job "${job_name}"
+        delete_wrenuser "${user_name}"
+        return 1
+    fi
+
+    # Wait for pod
+    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+    local pod_name=""
+    while true; do
+        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+            -l "wren.giar.dev/job-name=${job_name}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then break; fi
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            warn "No pod found for job '${job_name}'"
+            delete_job "${job_name}"; delete_wrenuser "${user_name}"; return 1
+        fi
+        sleep 3
+    done
+
+    log "  Found pod: ${pod_name}"
+
+    # Extract env vars from pod spec
+    local env_json
+    env_json=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.containers[0].env}' 2>/dev/null || echo "[]")
+
+    # Check USER env var
+    if [[ "$env_json" == *"\"name\":\"USER\""* || "$env_json" == *"USER"* ]]; then
+        # Extract value — look for USER env with correct value
+        local user_val
+        user_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.spec.containers[0].env[?(@.name=="USER")].value}' 2>/dev/null || echo "")
+        if [[ "$user_val" == "${user_name}" ]]; then
+            log "  USER=${user_val} (correct)"
+        else
+            error "USER env var mismatch: expected '${user_name}', got '${user_val}'"
+            errors=$(( errors + 1 ))
+        fi
+    else
+        error "USER env var not found on pod"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Check LOGNAME env var
+    local logname_val
+    logname_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.containers[0].env[?(@.name=="LOGNAME")].value}' 2>/dev/null || echo "")
+    if [[ "$logname_val" == "${user_name}" ]]; then
+        log "  LOGNAME=${logname_val} (correct)"
+    else
+        error "LOGNAME env var mismatch: expected '${user_name}', got '${logname_val}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Check HOME env var
+    local home_val
+    home_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.containers[0].env[?(@.name=="HOME")].value}' 2>/dev/null || echo "")
+    if [[ "$home_val" == "/home/${user_name}" ]]; then
+        log "  HOME=${home_val} (correct)"
+    else
+        error "HOME env var mismatch: expected '/home/${user_name}', got '${home_val}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    delete_job "${job_name}"
+    delete_wrenuser "${user_name}"
+    [[ "$errors" -eq 0 ]]
+}
+
+user_test_pod_env_vars() {
+    run_test "pod USER/LOGNAME/HOME env vars from WrenUser" _user_test_pod_env_vars
+}
+
+# ---------------------------------------------------------------------------
+# User test 5: Graceful degradation — job with wren.io/user annotation but
+# no matching WrenUser CRD → pod runs without securityContext changes.
+# ---------------------------------------------------------------------------
+_user_test_missing_wrenuser() {
+    local job_name="user-missing-job"
+
+    # Do NOT create a WrenUser — test graceful degradation
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.io/user: "nonexistent-user"
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo no-user && sleep 30"]
+EOF
+
+    # The job should still progress — not fail because of missing WrenUser
+    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
+        error "Job failed to progress with missing WrenUser — should degrade gracefully"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # Wait for pod
+    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+    local pod_name=""
+    while true; do
+        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+            -l "wren.giar.dev/job-name=${job_name}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then break; fi
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            warn "No pod found — may still be scheduling"
+            delete_job "${job_name}"
+            return 0  # not a hard failure
+        fi
+        sleep 3
+    done
+
+    log "  Found pod: ${pod_name}"
+
+    # runAsUser should NOT be set (no WrenUser → no identity)
+    local run_as_user
+    run_as_user=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
+    if [[ -z "$run_as_user" || "$run_as_user" == "null" ]]; then
+        log "  runAsUser correctly absent (graceful degradation)"
+    else
+        error "runAsUser unexpectedly set to '${run_as_user}' with missing WrenUser"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    # USER env var should NOT be set
+    local user_val
+    user_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.containers[0].env[?(@.name=="USER")].value}' 2>/dev/null || echo "")
+    if [[ -z "$user_val" ]]; then
+        log "  USER env var correctly absent"
+    else
+        error "USER env var unexpectedly set to '${user_val}' with missing WrenUser"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    delete_job "${job_name}"
+    return 0
+}
+
+user_test_missing_wrenuser() {
+    run_test "graceful degradation with missing WrenUser" _user_test_missing_wrenuser
+}
+
+# ---------------------------------------------------------------------------
+# User test 6: No annotation — job without wren.io/user runs as default.
+# ---------------------------------------------------------------------------
+_user_test_no_annotation() {
+    local job_name="user-noannotation-job"
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo anonymous && sleep 30"]
+EOF
+
+    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
+        error "Job without annotation failed to progress"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+    local pod_name=""
+    while true; do
+        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+            -l "wren.giar.dev/job-name=${job_name}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then break; fi
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            warn "No pod found"
+            delete_job "${job_name}"
+            return 0
+        fi
+        sleep 3
+    done
+
+    # No runAsUser should be set
+    local run_as_user
+    run_as_user=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
+    if [[ -z "$run_as_user" || "$run_as_user" == "null" ]]; then
+        log "  runAsUser correctly absent (no annotation)"
+    else
+        error "runAsUser unexpectedly set to '${run_as_user}' without wren.io/user annotation"
+        delete_job "${job_name}"
+        return 1
+    fi
+
+    delete_job "${job_name}"
+    return 0
+}
+
+user_test_no_annotation() {
+    run_test "job without wren.io/user runs as default" _user_test_no_annotation
+}
+
+# ---------------------------------------------------------------------------
+# User test 7: Two users, two jobs — verify each pod gets correct identity.
+# ---------------------------------------------------------------------------
+_user_test_two_users() {
+    local user_a="test-user-alice"
+    local user_b="test-user-bob"
+    local job_a="user-alice-job"
+    local job_b="user-bob-job"
+    local errors=0
+
+    create_wrenuser "${user_a}" 6001 6001 "/home/alice" "project-a"
+    create_wrenuser "${user_b}" 6002 6002 "/home/bob" "project-b"
+
+    for job_name in "${job_a}" "${job_b}"; do
+        local user_ann="${user_a}"
+        [[ "$job_name" == "$job_b" ]] && user_ann="${user_b}"
+        cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.io/user: "${user_ann}"
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "id && sleep 30"]
+EOF
+    done
+
+    # Wait for both jobs
+    wait_for_job_state "${job_a}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}" || true
+    wait_for_job_state "${job_b}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}" || true
+
+    # Wait for pods
+    sleep 5
+
+    # Check Alice's pod
+    local pod_a
+    pod_a=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+        -l "wren.giar.dev/job-name=${job_a}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [[ -n "$pod_a" && "$pod_a" != "null" ]]; then
+        local uid_a
+        uid_a=$(kubectl get pod "${pod_a}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
+        if [[ "$uid_a" == "6001" ]]; then
+            log "  Alice's pod runAsUser: ${uid_a} (correct)"
+        else
+            error "Alice's pod runAsUser mismatch: expected 6001, got '${uid_a}'"
+            errors=$(( errors + 1 ))
+        fi
+
+        local user_env_a
+        user_env_a=$(kubectl get pod "${pod_a}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.spec.containers[0].env[?(@.name=="USER")].value}' 2>/dev/null || echo "")
+        if [[ "$user_env_a" == "${user_a}" ]]; then
+            log "  Alice's pod USER env: ${user_env_a} (correct)"
+        else
+            error "Alice's pod USER env mismatch: expected '${user_a}', got '${user_env_a}'"
+            errors=$(( errors + 1 ))
+        fi
+    else
+        error "No pod found for Alice's job"
+        errors=$(( errors + 1 ))
+    fi
+
+    # Check Bob's pod
+    local pod_b
+    pod_b=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+        -l "wren.giar.dev/job-name=${job_b}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [[ -n "$pod_b" && "$pod_b" != "null" ]]; then
+        local uid_b
+        uid_b=$(kubectl get pod "${pod_b}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
+        if [[ "$uid_b" == "6002" ]]; then
+            log "  Bob's pod runAsUser: ${uid_b} (correct)"
+        else
+            error "Bob's pod runAsUser mismatch: expected 6002, got '${uid_b}'"
+            errors=$(( errors + 1 ))
+        fi
+
+        local user_env_b
+        user_env_b=$(kubectl get pod "${pod_b}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.spec.containers[0].env[?(@.name=="USER")].value}' 2>/dev/null || echo "")
+        if [[ "$user_env_b" == "${user_b}" ]]; then
+            log "  Bob's pod USER env: ${user_env_b} (correct)"
+        else
+            error "Bob's pod USER env mismatch: expected '${user_b}', got '${user_env_b}'"
+            errors=$(( errors + 1 ))
+        fi
+    else
+        error "No pod found for Bob's job"
+        errors=$(( errors + 1 ))
+    fi
+
+    delete_job "${job_a}"
+    delete_job "${job_b}"
+    delete_wrenuser "${user_a}"
+    delete_wrenuser "${user_b}"
+    [[ "$errors" -eq 0 ]]
+}
+
+user_test_two_users() {
+    run_test "two users get distinct identity on pods" _user_test_two_users
+}
+
+# ---------------------------------------------------------------------------
+# User test 8: WrenUser without homeDir — HOME env var should be absent.
+# ---------------------------------------------------------------------------
+_user_test_no_homedir() {
+    local user_name="test-user-nohome"
+    local job_name="user-nohome-job"
+
+    # Create WrenUser without homeDir
+    create_wrenuser "${user_name}" 7001 7001
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.io/user: "${user_name}"
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo nohome && sleep 30"]
+EOF
+
+    if ! wait_for_job_state "${job_name}" "Scheduling|Running|Succeeded" "${JOB_TIMEOUT}"; then
+        warn "Job did not progress"
+        delete_job "${job_name}"; delete_wrenuser "${user_name}"; return 1
+    fi
+
+    local deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+    local pod_name=""
+    while true; do
+        pod_name=$(kubectl get pods -n "${TEST_NAMESPACE}" \
+            -l "wren.giar.dev/job-name=${job_name}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [[ -n "$pod_name" && "$pod_name" != "null" ]]; then break; fi
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            warn "No pod found"; delete_job "${job_name}"; delete_wrenuser "${user_name}"; return 1
+        fi
+        sleep 3
+    done
+
+    local errors=0
+
+    # runAsUser SHOULD be set (WrenUser exists)
+    local run_as_user
+    run_as_user=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.securityContext.runAsUser}' 2>/dev/null || echo "")
+    if [[ "$run_as_user" == "7001" ]]; then
+        log "  runAsUser: ${run_as_user} (correct — identity applied)"
+    else
+        error "runAsUser mismatch: expected 7001, got '${run_as_user}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    # USER env var SHOULD be set
+    local user_val
+    user_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.containers[0].env[?(@.name=="USER")].value}' 2>/dev/null || echo "")
+    if [[ "$user_val" == "${user_name}" ]]; then
+        log "  USER=${user_val} (correct)"
+    else
+        error "USER env var mismatch: expected '${user_name}', got '${user_val}'"
+        errors=$(( errors + 1 ))
+    fi
+
+    # HOME env var should NOT be set (no homeDir in WrenUser)
+    local home_val
+    home_val=$(kubectl get pod "${pod_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.containers[0].env[?(@.name=="HOME")].value}' 2>/dev/null || echo "")
+    if [[ -z "$home_val" ]]; then
+        log "  HOME env var correctly absent (no homeDir)"
+    else
+        error "HOME env var unexpectedly set to '${home_val}' (WrenUser has no homeDir)"
+        errors=$(( errors + 1 ))
+    fi
+
+    delete_job "${job_name}"
+    delete_wrenuser "${user_name}"
+    [[ "$errors" -eq 0 ]]
+}
+
+user_test_no_homedir() {
+    run_test "WrenUser without homeDir — HOME env absent" _user_test_no_homedir
+}
+
+# ---------------------------------------------------------------------------
+# User test 9: Job with project field — verify project is stored in CR.
+# ---------------------------------------------------------------------------
+_user_test_project_field() {
+    local job_name="user-project-job"
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+spec:
+  queue: default
+  nodes: 1
+  tasksPerNode: 1
+  walltime: "5m"
+  project: "climate-sim"
+  container:
+    image: busybox:latest
+    command: ["sh", "-c", "echo project-test && sleep 10"]
+EOF
+
+    sleep 3
+
+    local retrieved_project
+    retrieved_project=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.project}' 2>/dev/null || echo "")
+    if [[ "$retrieved_project" == "climate-sim" ]]; then
+        log "  project field: ${retrieved_project} (correct)"
+        delete_job "${job_name}"
+        return 0
+    else
+        error "project field mismatch: expected 'climate-sim', got '${retrieved_project}'"
+        delete_job "${job_name}"
+        return 1
+    fi
+}
+
+user_test_project_field() {
+    run_test "WrenJob project field stored in CR" _user_test_project_field
+}
+
+# ---------------------------------------------------------------------------
+# User test 10: WrenUser CRD is cluster-scoped — verify accessible without
+# namespace and reusable across namespaces.
+# ---------------------------------------------------------------------------
+_user_test_cluster_scoped() {
+    local user_name="test-user-cluster"
+
+    create_wrenuser "${user_name}" 9001 9001 "/home/cluster-user"
+
+    # Should be listable without -n flag (cluster-scoped)
+    local list_output
+    list_output=$(kubectl get wrenusers 2>&1 || echo "")
+    if [[ "$list_output" == *"${user_name}"* ]]; then
+        log "  WrenUser visible in cluster-wide list"
+    else
+        error "WrenUser not visible in 'kubectl get wrenusers' output"
+        delete_wrenuser "${user_name}"
+        return 1
+    fi
+
+    # Should NOT support -n (cluster-scoped resources ignore namespace)
+    local ns_output
+    ns_output=$(kubectl get wrenuser "${user_name}" 2>/dev/null || echo "")
+    if [[ "$ns_output" == *"${user_name}"* || "$ns_output" == *"9001"* ]]; then
+        log "  WrenUser accessible without namespace qualifier (correct — cluster-scoped)"
+    else
+        error "WrenUser not accessible: '${ns_output}'"
+        delete_wrenuser "${user_name}"
+        return 1
+    fi
+
+    delete_wrenuser "${user_name}"
+    return 0
+}
+
+user_test_cluster_scoped() {
+    run_test "WrenUser CRD is cluster-scoped" _user_test_cluster_scoped
+}
+
+# ---------------------------------------------------------------------------
+# Run all multi-user integration tests
+# ---------------------------------------------------------------------------
+run_user_tests() {
+    section "Running multi-user identity integration tests"
+
+    if [[ "$TESTS" != "user" && "$TESTS" != "all" ]]; then
+        record_skip "Multi-user identity tests (TESTS=${TESTS})"
+        return
+    fi
+
+    user_test_crd_crud
+    user_test_crd_minimal
+    user_test_cluster_scoped
+    user_test_project_field
+    user_test_pod_security_context
+    user_test_pod_env_vars
+    user_test_no_homedir
+    user_test_missing_wrenuser
+    user_test_no_annotation
+    user_test_two_users
+}
+
+# ===========================================================================
 # CLI integration tests
 #
 # These tests exercise the `wren` CLI binary against a live cluster. They
@@ -1863,7 +2730,7 @@ run_cli_tests() {
 run_shell_tests() {
     section "Running shell smoke tests"
 
-    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" ]]; then
+    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" || "$TESTS" == "user" ]]; then
         record_skip "Shell smoke tests (TESTS=${TESTS})"
         return
     fi
@@ -1895,6 +2762,7 @@ main() {
     echo "  Skip cargo:  ${SKIP_CARGO}"
     echo "  No cleanup:  ${NO_CLEANUP}"
     echo "  Only CLI:    ${ONLY_CLI}"
+    echo "  Only User:   ${ONLY_USER}"
     echo "  Verbose:     ${VERBOSE}"
     echo "  Log file:    ${LOG_FILE}"
     echo "========================================================"
@@ -1919,6 +2787,7 @@ main() {
 
     # Run the requested test suites
     run_shell_tests
+    run_user_tests
     run_cli_tests
     run_rust_tests
 
