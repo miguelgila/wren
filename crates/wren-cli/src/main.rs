@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use kube::{config::KubeConfigOptions, Client, Config};
 use tracing_subscriber::EnvFilter;
 
 mod cancel;
@@ -12,8 +13,44 @@ mod submit;
 #[derive(Parser)]
 #[command(name = "wren", version, about, long_about = None)]
 struct Cli {
+    /// Kubernetes context to use (defaults to current kubeconfig context)
+    #[arg(long, global = true)]
+    context: Option<String>,
+
+    /// Path to kubeconfig file (defaults to $KUBECONFIG or ~/.kube/config)
+    #[arg(long, global = true, env = "KUBECONFIG")]
+    kubeconfig: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Build a Kubernetes client, optionally using a specific kubeconfig file and/or context.
+async fn build_client(kubeconfig: Option<&str>, context: Option<&str>) -> Result<Client> {
+    let config = match (kubeconfig, context) {
+        (Some(path), ctx) => {
+            let opts = KubeConfigOptions {
+                context: ctx.map(|s| s.to_string()),
+                ..Default::default()
+            };
+            let kubeconfig = kube::config::Kubeconfig::read_from(path)
+                .with_context(|| format!("failed to read kubeconfig from '{path}'"))?;
+            Config::from_custom_kubeconfig(kubeconfig, &opts)
+                .await
+                .context("failed to build config from kubeconfig")?
+        }
+        (None, Some(ctx)) => {
+            let opts = KubeConfigOptions {
+                context: Some(ctx.to_string()),
+                ..Default::default()
+            };
+            Config::from_kubeconfig(&opts)
+                .await
+                .with_context(|| format!("failed to load kubeconfig context '{ctx}'"))?
+        }
+        (None, None) => Config::infer().await.context("failed to infer kubeconfig")?,
+    };
+    Client::try_from(config).context("failed to create Kubernetes client")
 }
 
 #[derive(Subcommand)]
@@ -81,21 +118,22 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let client = build_client(cli.kubeconfig.as_deref(), cli.context.as_deref()).await?;
 
     match cli.command {
         Commands::Submit { file, queue, nodes } => {
-            submit::run(&file, queue.as_deref(), nodes).await
+            submit::run(client, &file, queue.as_deref(), nodes).await
         }
         Commands::Queue { queue, namespace } => {
-            self::queue::run(queue.as_deref(), namespace.as_deref()).await
+            self::queue::run(client, queue.as_deref(), namespace.as_deref()).await
         }
-        Commands::Cancel { job, namespace } => cancel::run(&job, &namespace).await,
-        Commands::Status { job, namespace } => status::run(&job, &namespace).await,
+        Commands::Cancel { job, namespace } => cancel::run(client, &job, &namespace).await,
+        Commands::Status { job, namespace } => status::run(client, &job, &namespace).await,
         Commands::Logs {
             job,
             rank,
             follow,
             namespace,
-        } => logs::run(&job, rank, follow, &namespace).await,
+        } => logs::run(client, &job, rank, follow, &namespace).await,
     }
 }

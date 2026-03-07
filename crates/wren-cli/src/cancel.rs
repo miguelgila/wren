@@ -1,16 +1,11 @@
 use anyhow::{Context, Result};
-use kube::{
-    api::{Api, DeleteParams},
-    Client,
-};
+use kube::api::{Api, DeleteParams};
+use kube::Client;
 use tracing::info;
 use wren_core::WrenJob;
 
 /// Delete an WrenJob by name in the given namespace.
-pub async fn run(job: &str, namespace: &str) -> Result<()> {
-    let client = Client::try_default()
-        .await
-        .context("failed to create Kubernetes client")?;
+pub async fn run(client: Client, job: &str, namespace: &str) -> Result<()> {
 
     let api: Api<WrenJob> = Api::namespaced(client, namespace);
 
