@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./examples/quickstart.sh                  # Full setup using GHCR latest image
-#   ./examples/quickstart.sh --release 0.2.1  # Use a specific release version
+#   ./examples/quickstart.sh --release 0.3.0  # Use a specific release version
 #   ./examples/quickstart.sh --dev            # Build controller from source
 #   ./examples/quickstart.sh --no-cluster     # Skip cluster creation (reuse existing)
 #   ./examples/quickstart.sh --cleanup        # Tear down the cluster
@@ -223,8 +223,8 @@ echo ""
 WREN_CLI=""
 if command -v cargo &>/dev/null; then
     info "Building wren CLI..."
-    if cargo build --release --bin wren-cli -q 2>/dev/null; then
-        WREN_CLI="$ROOT_DIR/target/release/wren-cli"
+    if cargo build --release --bin wren -q 2>/dev/null; then
+        WREN_CLI="$ROOT_DIR/target/release/wren"
         ok "CLI built: $WREN_CLI"
         info "To use it: export PATH=\"$ROOT_DIR/target/release:\$PATH\""
     else

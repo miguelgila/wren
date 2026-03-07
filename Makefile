@@ -1,6 +1,27 @@
-.PHONY: build build-release fmt clippy check-linux test test-unit coverage ci integration integration-quick docker helm-lint helm-template crds clean clean-all help
+# Wren — Development Makefile
+#
+# Primary entry point for all build, test, and CI workflows.
+# Run `make help` to see available targets.
 
-## Build
+LINUX_TARGET := x86_64-unknown-linux-musl
+DOCKER_IMAGE := wren-controller
+CONTROLLER_BIN := wren-controller
+CLI_BIN := wren
+
+.PHONY: help build build-release cli cli-release cli-install controller controller-release \
+        fmt clippy check-linux test test-unit test-cli test-scheduler test-core \
+        coverage ci docker helm-lint helm-template integration integration-quick \
+        quickstart crds clean clean-all
+
+.DEFAULT_GOAL := help
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
 
 build: ## Build all crates (debug)
 	cargo build --workspace
@@ -8,18 +29,37 @@ build: ## Build all crates (debug)
 build-release: ## Build all crates (release)
 	cargo build --workspace --release
 
-## Quality
+cli: ## Build the wren CLI (debug)
+	cargo build --bin $(CLI_BIN)
 
-fmt: ## Check formatting
+cli-release: ## Build the wren CLI (release)
+	cargo build --release --bin $(CLI_BIN)
+
+cli-install: cli-release ## Build and install the wren CLI to ~/.cargo/bin
+	cp target/release/$(CLI_BIN) ~/.cargo/bin/wren
+
+controller: ## Build the controller binary (debug)
+	cargo build --bin $(CONTROLLER_BIN)
+
+controller-release: ## Build the controller binary (release)
+	cargo build --release --bin $(CONTROLLER_BIN)
+
+# ---------------------------------------------------------------------------
+# Quality checks
+# ---------------------------------------------------------------------------
+
+fmt: ## Check formatting (fails if unformatted)
 	cargo fmt --all -- --check
 
-clippy: ## Run clippy lints
+clippy: ## Run clippy with warnings as errors
 	cargo clippy --workspace --all-targets -- -D warnings
 
-check-linux: ## Cross-check for x86_64 Linux (requires target installed)
-	cargo check --workspace --target x86_64-unknown-linux-gnu
+check-linux: ## Cross-check for Linux musl target (requires target installed)
+	cargo check --workspace --target $(LINUX_TARGET)
 
-## Test
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 test: ## Run all tests
 	cargo test --workspace
@@ -27,7 +67,18 @@ test: ## Run all tests
 test-unit: ## Run unit tests only (no integration)
 	cargo test --workspace --lib
 
-## Coverage
+test-cli: ## Run only CLI tests
+	cargo test -p wren-cli
+
+test-scheduler: ## Run only scheduler tests
+	cargo test -p wren-scheduler
+
+test-core: ## Run only core tests
+	cargo test -p wren-core
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
 
 coverage: ## Run coverage via tarpaulin in Docker (mirrors CI)
 	docker run --rm \
@@ -37,47 +88,60 @@ coverage: ## Run coverage via tarpaulin in Docker (mirrors CI)
 		xd009642/tarpaulin:latest \
 		cargo tarpaulin --config tarpaulin.toml
 
-## CI
+# ---------------------------------------------------------------------------
+# CI — run everything GitHub Actions runs (except integration)
+# ---------------------------------------------------------------------------
 
-ci: fmt clippy check-linux test coverage ## Run full CI-equivalent locally
+ci: fmt clippy check-linux test coverage ## Full CI-equivalent check
+	@echo ""
+	@echo "All CI checks passed."
 
-## Integration
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
 
-integration: ## Run integration tests (requires kind cluster)
+docker: ## Build controller Docker image (dev tag)
+	docker build -f docker/Dockerfile.controller -t $(DOCKER_IMAGE):dev .
+
+# ---------------------------------------------------------------------------
+# Helm
+# ---------------------------------------------------------------------------
+
+helm-lint: ## Lint the Helm chart
+	helm lint charts/wren
+
+helm-template: ## Render Helm chart templates locally (dry-run)
+	helm template wren charts/wren
+
+# ---------------------------------------------------------------------------
+# Integration tests (requires Docker + kind)
+# ---------------------------------------------------------------------------
+
+integration: ## Run K8s integration tests (kind cluster)
 	./scripts/run-integration-tests.sh
 
 integration-quick: ## Run integration tests (skip cluster creation)
 	SKIP_CLUSTER_CREATE=1 ./scripts/run-integration-tests.sh
 
-## Docker
+quickstart: ## Run quickstart script (spins up kind cluster + examples)
+	./examples/quickstart.sh
 
-docker: ## Build controller container image (dev tag)
-	docker build -f docker/Dockerfile.controller -t bubo-controller:dev .
-
-## Helm
-
-helm-lint: ## Lint the Helm chart
-	helm lint charts/bubo
-
-helm-template: ## Render Helm chart templates locally (dry-run)
-	helm template bubo charts/bubo
-
-## CRDs
+# ---------------------------------------------------------------------------
+# CRD generation
+# ---------------------------------------------------------------------------
 
 crds: ## Regenerate CRD manifests from Rust types
-	cargo run -p bubo-core --bin crd-gen -- all
+	cargo run -p wren-core --bin crd-gen -- all
 
-## Clean
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
 
 clean: ## Remove build artifacts
 	cargo clean
 
-clean-all: clean ## Remove build artifacts and Docker build cache
-	docker rmi bubo-dev 2>/dev/null || true
+clean-all: clean ## Remove build artifacts and Docker images
+	docker rmi $(DOCKER_IMAGE):dev 2>/dev/null || true
 
-## Help
-
-help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
-
-.DEFAULT_GOAL := help
+clean-cluster: ## Delete the kind test cluster
+	./examples/quickstart.sh --cleanup

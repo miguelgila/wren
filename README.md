@@ -223,7 +223,7 @@ Wren is structured as a Cargo workspace with four crates:
 - **Leader election** — HA controller deployment
 - **Prometheus metrics** — queue depth, wait time, scheduling latency, utilization
 - **Helm chart** — deploy with `helm install`
-- **Container image** — multi-arch (amd64/arm64) on GHCR
+- **Container image** — amd64 on GHCR
 - **Integration tests** — end-to-end validated with Kind cluster
 
 ## Examples
@@ -290,7 +290,7 @@ cargo test --workspace
 Every merged PR automatically triggers a patch version bump, changelog generation (via [git-cliff](https://git-cliff.org/)), and a GitHub Release with:
 - Static musl binaries for `x86_64` and `aarch64`
 - SHA-256 checksums signed with [cosign](https://github.com/sigstore/cosign) (keyless, via GitHub OIDC)
-- Multi-arch container image pushed to GHCR
+- Container image pushed to GHCR (amd64)
 
 To skip the automatic release, add the `skip-release` label to the PR. For minor/major bumps, use the **Manual Release** workflow.
 
