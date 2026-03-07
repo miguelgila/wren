@@ -18,6 +18,10 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.jobId
+      name: JobID
+      priority: 0
+      type: integer
     - jsonPath: .status.state
       name: State
       type: string
@@ -36,7 +40,7 @@ spec:
         description: Auto-generated derived type for WrenJobSpec via `CustomResource`
         properties:
           spec:
-            description: WrenJob is the primary user-facing CRD for submitting multi-node workloads. This is the Wren equivalent of `sbatch`.
+            description: WrenJob is the primary user-facing CRD for submitting multi-node MPI workloads. This is the Wren equivalent of `sbatch`.
             properties:
               backend:
                 default: container
@@ -160,6 +164,10 @@ spec:
                 description: Job priority (higher = more important)
                 format: int32
                 type: integer
+              project:
+                description: Project for fair-share grouping (optional, user-settable)
+                nullable: true
+                type: string
               queue:
                 default: default
                 description: Queue to submit this job to
@@ -229,6 +237,12 @@ spec:
                 description: Time the job completed
                 nullable: true
                 type: string
+              jobId:
+                description: Sequential numeric job ID (Slurm-style), assigned by the controller
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
               message:
                 description: Human-readable message
                 nullable: true

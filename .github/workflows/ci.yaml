@@ -110,6 +110,8 @@ jobs:
           version: "3.16.0"
       - name: Lint chart
         run: helm lint charts/wren
+      - name: Verify Helm CRDs match manifests
+        run: ./scripts/check-crd-sync.sh
 
   # ─── Docker build & push ───────────────────────────────────────────────────
 
