@@ -191,8 +191,9 @@ fi
 # ---------------------------------------------------------------------------
 if [ "${SKIP_CONTROLLER:-false}" != "true" ]; then
     info "Deploying controller..."
-    kubectl --context "$KUBE_CONTEXT" apply -f "$ROOT_DIR/manifests/rbac/rbac.yaml"
+    # deployment.yaml creates the wren-system namespace; apply it before RBAC
     kubectl --context "$KUBE_CONTEXT" apply -f "$ROOT_DIR/manifests/deployment.yaml"
+    kubectl --context "$KUBE_CONTEXT" apply -f "$ROOT_DIR/manifests/rbac/rbac.yaml"
 
     # Patch the image if using a release build
     if [ "$BUILD_MODE" != "dev" ]; then
