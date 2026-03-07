@@ -15,8 +15,13 @@ pub(crate) fn build_label_selector(job: &str, rank: Option<u32>) -> String {
 }
 
 /// Fetch logs from pods belonging to a WrenJob, with optional rank and follow support.
-pub async fn run(client: Client, job: &str, rank: Option<u32>, follow: bool, namespace: &str) -> Result<()> {
-
+pub async fn run(
+    client: Client,
+    job: &str,
+    rank: Option<u32>,
+    follow: bool,
+    namespace: &str,
+) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(client, namespace);
 
     let label_selector = build_label_selector(job, rank);

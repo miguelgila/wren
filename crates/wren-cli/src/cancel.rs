@@ -6,7 +6,6 @@ use wren_core::WrenJob;
 
 /// Delete an WrenJob by name in the given namespace.
 pub async fn run(client: Client, job: &str, namespace: &str) -> Result<()> {
-
     let api: Api<WrenJob> = Api::namespaced(client, namespace);
 
     api.delete(job, &DeleteParams::default())

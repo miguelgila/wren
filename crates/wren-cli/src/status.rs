@@ -68,7 +68,6 @@ pub(crate) fn format_job_status(
 
 /// Show detailed status information about a specific WrenJob.
 pub async fn run(client: Client, job: &str, namespace: &str) -> Result<()> {
-
     let api: Api<WrenJob> = Api::namespaced(client, namespace);
 
     let wrenjob = api

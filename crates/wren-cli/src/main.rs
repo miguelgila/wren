@@ -48,7 +48,9 @@ async fn build_client(kubeconfig: Option<&str>, context: Option<&str>) -> Result
                 .await
                 .with_context(|| format!("failed to load kubeconfig context '{ctx}'"))?
         }
-        (None, None) => Config::infer().await.context("failed to infer kubeconfig")?,
+        (None, None) => Config::infer()
+            .await
+            .context("failed to infer kubeconfig")?,
     };
     Client::try_from(config).context("failed to create Kubernetes client")
 }
