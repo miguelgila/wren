@@ -219,12 +219,27 @@ echo "  Wren is ready! Let's run some examples."
 echo "==========================================="
 echo ""
 
+# Build the wren CLI if cargo is available
+WREN_CLI=""
+if command -v cargo &>/dev/null; then
+    info "Building wren CLI..."
+    if cargo build --release --bin wren-cli -q 2>/dev/null; then
+        WREN_CLI="$ROOT_DIR/target/release/wren-cli"
+        ok "CLI built: $WREN_CLI"
+        info "To use it: export PATH=\"$ROOT_DIR/target/release:\$PATH\""
+    else
+        warn "CLI build failed; falling back to kubectl for examples."
+    fi
+fi
+
+CTX="--context $KUBE_CONTEXT"
+
 # --- Example 1: Hello World ---
 info "Example 1: Hello World (single-node job)"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/01-hello-world/job.yaml"
 ok "Created: hello-wren"
-echo "  Check status:  kubectl get wrenjob hello-wren -o wide"
-echo "  Watch:         kubectl get wrenjob hello-wren -w"
+echo "  Check status:  wren status hello-wren"
+echo "  Or with kubectl: kubectl $CTX get wrenjob hello-wren -o wide"
 echo ""
 
 sleep 2
@@ -233,8 +248,8 @@ sleep 2
 info "Example 2: Multi-node job (2 workers, gang scheduled)"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/02-multi-node/job.yaml"
 ok "Created: multi-node-demo"
-echo "  Check pods:    kubectl get pods -l wren.giar.dev/job-name=multi-node-demo"
-echo "  Check service: kubectl get svc multi-node-demo-workers"
+echo "  Check status:  wren status multi-node-demo"
+echo "  Check pods:    kubectl $CTX get pods -l wren.giar.dev/job-name=multi-node-demo"
 echo ""
 
 sleep 2
@@ -244,8 +259,8 @@ info "Example 3: Queue with policies"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/03-queues/queue.yaml"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/03-queues/job.yaml"
 ok "Created: batch queue + batch-job"
-echo "  List queues:   kubectl get wrenqueues"
-echo "  Queue detail:  kubectl get wrenqueue batch -o yaml"
+echo "  List queues:   wren queue"
+echo "  Queue detail:  kubectl $CTX get wrenqueue batch -o yaml"
 echo ""
 
 sleep 2
@@ -254,8 +269,8 @@ sleep 2
 info "Example 4: Topology-aware placement"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/04-topology/job.yaml"
 ok "Created: topology-aware-job"
-echo "  Check nodes:   kubectl get nodes --show-labels | grep topology.wren.giar.dev"
-echo "  Check status:  kubectl get wrenjob topology-aware-job -o yaml"
+echo "  Check nodes:   kubectl $CTX get nodes --show-labels | grep topology.wren.giar.dev"
+echo "  Check status:  wren status topology-aware-job"
 echo ""
 
 sleep 2
@@ -265,7 +280,7 @@ info "Example 5: Priority scheduling"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/05-priority/low-priority.yaml"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/05-priority/high-priority.yaml"
 ok "Created: low-priority-job + high-priority-job"
-echo "  List all jobs: kubectl get wrenjobs"
+echo "  List all jobs: wren queue"
 echo ""
 
 sleep 2
@@ -274,7 +289,7 @@ sleep 2
 info "Example 6: Job dependencies (preprocess → train → evaluate)"
 kubectl --context "$KUBE_CONTEXT" apply -f "$SCRIPT_DIR/06-dependencies/pipeline.yaml"
 ok "Created: preprocess + train + evaluate (dependency chain)"
-echo "  List all jobs: kubectl get wrenjobs"
+echo "  List all jobs: wren queue"
 echo "  NOTE: Dependencies are defined in the CRD but not yet reconciled."
 echo ""
 
@@ -286,16 +301,28 @@ echo "==========================================="
 echo "  All examples submitted!"
 echo "==========================================="
 echo ""
-echo "Useful commands:"
-echo "  kubectl get wrenjobs                         # List all jobs"
-echo "  kubectl get wrenjob <name> -o yaml           # Job details"
-echo "  kubectl get pods -l wren.giar.dev/job-name=<name> # Job pods"
-echo "  kubectl get wrenqueues                      # List queues"
-echo "  kubectl get nodes --show-labels             # Node topology"
+if [ -n "$WREN_CLI" ]; then
+    echo "Add the wren CLI to your PATH:"
+    echo "  export PATH=\"$ROOT_DIR/target/release:\$PATH\""
+    echo ""
+fi
+echo "Useful commands (wren CLI):"
+echo "  wren queue                                   # List all jobs"
+echo "  wren status <name>                           # Job details"
+echo "  wren logs <name>                             # Job logs"
+echo "  wren logs <name> --rank 0                    # Logs for a specific rank"
+echo "  wren cancel <name>                           # Cancel a job"
+echo ""
+echo "Useful commands (kubectl):"
+echo "  kubectl $CTX get wrenjobs                         # List all jobs"
+echo "  kubectl $CTX get wrenjob <name> -o yaml           # Job details"
+echo "  kubectl $CTX get pods -l wren.giar.dev/job-name=<name> # Job pods"
+echo "  kubectl $CTX get wrenqueues                       # List queues"
+echo "  kubectl $CTX get nodes --show-labels              # Node topology"
 echo ""
 echo "To clean up examples:"
-echo "  kubectl delete wrenjob --all"
-echo "  kubectl delete wrenqueue --all"
+echo "  kubectl $CTX delete wrenjob --all"
+echo "  kubectl $CTX delete wrenqueue --all"
 echo ""
 echo "To tear down the cluster:"
 echo "  ./examples/quickstart.sh --cleanup"
