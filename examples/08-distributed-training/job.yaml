@@ -1,0 +1,47 @@
+# Distributed PyTorch training on bare-metal nodes via ReaperPod CRD.
+#
+# STATUS: PROPOSED — this WrenJob format is not yet implemented.
+# The `backend: reaperpod` value does not exist in the current CRD.
+# This file shows what `wren submit` would look like once the Wren
+# controller learns to create ReaperPod CRDs instead of using the
+# HTTP agent API. See CLAUDE.md Phase 3a TODOs.
+#
+# For a working demo, run setup.sh — it creates ReaperPod CRDs directly.
+#
+# How it would work:
+#   1. Wren controller gang-schedules 2 nodes.
+#   2. For each node, controller creates a ReaperPod CRD with the
+#      training env vars (MASTER_ADDR, RANK, WORLD_SIZE, etc.).
+#   3. The Reaper controller translates each ReaperPod into a Pod
+#      with runtimeClassName: reaper-v2 → bare-metal execution.
+#   4. ConfigMap volume delivers the training script.
+#   5. PyTorch Gloo backend connects the ranks over TCP.
+#
+# Prerequisites:
+#   kubectl apply -f configmap.yaml    # training script
+#   kubectl apply -f user.yaml         # user identity
+#   wren submit job.yaml               # (once backend: reaperpod exists)
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: pytorch-ddp-training
+  annotations:
+    wren.giar.dev/user: researcher
+spec:
+  nodes: 2
+  tasksPerNode: 1
+  walltime: "10m"
+  backend: reaperpod                        # PROPOSED — not yet implemented
+  reaperpod:
+    command: ["python3", "/opt/train/train.py"]
+    env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+    volumes:
+      - name: training-script
+        mountPath: /opt/train
+        readOnly: true
+        configMap: pytorch-ddp-train
+  mpi:
+    implementation: openmpi
+    fabricInterface: eth0

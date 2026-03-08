@@ -318,6 +318,8 @@ up the WrenUser when creating pods (securityContext) or dispatching to Reaper
 - [x] Hostfile distribution (content in request JSON, Reaper writes to disk)
 - [x] Shared resource tracking between container and reaper backends
 - [ ] Integration test with Reaper
+- [ ] **Migrate reaper backend from HTTP agent API to ReaperPod CRD.** The current `backend: reaper` POSTs to a custom HTTP API on each agent, bypassing Kubernetes. Instead, the reaper backend should create `ReaperPod` CRDs (from the reaper project). The ReaperPod controller translates them into Pods with `runtimeClassName: reaper-v2`, giving Kubernetes-native ConfigMap/Secret volumes, kubectl logs/exec, and lifecycle management — all while running on bare metal. This eliminates the need for the custom `ReaperJobRequest` HTTP protocol and makes the reaper backend a thin layer on top of the container backend.
+- [ ] Add `runtimeClassName` field to `ContainerSpec` CRD so users can specify `reaper-v2` directly.
 
 #### Phase 3b: Multi-Task & Resource Binding — PLANNED
 **Goal:** Support `tasks_per_node > 1` with CPU affinity and GPU binding (replaces Slurm's `srun` intra-node functionality).

@@ -1,0 +1,97 @@
+# ConfigMap containing the PyTorch distributed training script.
+#
+# This is how code gets delivered to bare-metal nodes without SSH or
+# shared filesystems. The training script is mounted as a volume
+# inside the Reaper pod at /opt/train/train.py.
+#
+# In production, you'd use a shared filesystem instead:
+#   /lustre/projects/my-model/train.py
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pytorch-ddp-train
+data:
+  train.py: |
+    #!/usr/bin/env python3
+    """Distributed training with PyTorch Gloo backend (CPU-only).
+
+    Each rank is launched independently on a different node. Coordination
+    happens via environment variables injected by the Wren controller:
+
+        MASTER_ADDR   — hostname/IP of rank 0
+        MASTER_PORT   — port for rendezvous (default 29500)
+        RANK          — global rank index
+        WORLD_SIZE    — total number of ranks
+    """
+
+    import os
+    import time
+    import socket
+
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+
+    def main():
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        master_addr = os.environ["MASTER_ADDR"]
+        master_port = os.environ.get("MASTER_PORT", "29500")
+
+        print(
+            f"[rank {rank}/{world_size}] starting on {socket.gethostname()}, "
+            f"master={master_addr}:{master_port}",
+            flush=True,
+        )
+
+        # Gloo = CPU-only, no NCCL/GPU needed
+        dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
+        print(f"[rank {rank}] process group initialized", flush=True)
+
+        # Tiny model: 32-dim input → 1-dim output
+        model = nn.Sequential(
+            nn.Linear(32, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+        )
+        ddp_model = DDP(model)
+        optimizer = optim.SGD(ddp_model.parameters(), lr=0.01)
+        loss_fn = nn.MSELoss()
+
+        # Training loop — synthetic data, different per rank
+        torch.manual_seed(42 + rank)
+        t0 = time.time()
+
+        for epoch in range(5):
+            x = torch.randn(16, 32)
+            y = torch.randn(16, 1)
+            optimizer.zero_grad()
+            loss = loss_fn(ddp_model(x), y)
+            loss.backward()  # DDP synchronizes gradients here
+            optimizer.step()
+            print(f"[rank {rank}] epoch {epoch+1}/5  loss={loss.item():.4f}", flush=True)
+
+        elapsed = time.time() - t0
+
+        # Verify all ranks converged to identical weights
+        param_sum = sum(p.sum().item() for p in model.parameters())
+        t = torch.tensor([param_sum])
+        if rank == 0:
+            gathered = [torch.zeros(1) for _ in range(world_size)]
+            dist.gather(t, gather_list=gathered, dst=0)
+            sums = [g.item() for g in gathered]
+            match = all(abs(s - sums[0]) < 1e-4 for s in sums)
+            print(f"\n[rank 0] param sums: {sums}", flush=True)
+            print(f"[rank 0] weights synchronized: {'YES' if match else 'NO'}", flush=True)
+        else:
+            dist.gather(t, dst=0)
+
+        print(f"[rank {rank}] done in {elapsed:.2f}s", flush=True)
+        dist.destroy_process_group()
+
+
+    if __name__ == "__main__":
+        main()
