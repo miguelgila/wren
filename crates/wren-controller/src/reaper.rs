@@ -21,6 +21,27 @@ pub struct ReaperJobRequest {
     /// Working directory for the job process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    /// Unix user ID for privilege dropping on the Reaper agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    /// Unix primary group ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gid: Option<u32>,
+    /// Username (for env var injection).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Home directory path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<String>,
+    /// Supplemental Unix groups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supplemental_groups: Option<Vec<u32>>,
+    /// MPI hostfile content — Reaper agent writes this to `hostfile_path` before running the script.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostfile: Option<String>,
+    /// Path where the hostfile should be written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostfile_path: Option<String>,
 }
 
 /// Response returned by a Reaper agent after submitting a job.
@@ -231,9 +252,11 @@ impl ReaperBackend {
     /// Build the job request for a specific node, injecting MPI environment variables.
     fn build_job_request(
         &self,
+        job_name: &str,
         spec: &WrenJobSpec,
         placement: &Placement,
         rank: u32,
+        user: Option<&UserIdentity>,
     ) -> Result<ReaperJobRequest, WrenError> {
         let reaper_spec = spec
             .reaper
@@ -242,20 +265,66 @@ impl ReaperBackend {
                 reason: "reaper spec required for reaper backend".to_string(),
             })?;
 
-        let hostfile_content = mpi::generate_hostfile(placement, spec.tasks_per_node);
-        let total = mpi::total_ranks(spec);
-
+        // Start with user-provided environment
         let mut environment = reaper_spec.environment.clone();
-        environment.insert("WREN_MPI_RANK".to_string(), rank.to_string());
-        environment.insert("WREN_TOTAL_RANKS".to_string(), total.to_string());
-        environment.insert("WREN_NUM_NODES".to_string(), spec.nodes.to_string());
-        environment.insert("WREN_HOSTFILE".to_string(), hostfile_content);
 
-        // Expose MPI implementation so the script can load the right module
-        if let Some(mpi_spec) = &spec.mpi {
-            environment.insert("WREN_MPI_IMPL".to_string(), mpi_spec.implementation.clone());
-            if let Some(ref iface) = mpi_spec.fabric_interface {
-                environment.insert("WREN_FABRIC_INTERFACE".to_string(), iface.clone());
+        // Hostfile for MPI — content written as env var AND a known path for the agent to write
+        let hostfile_content = mpi::generate_hostfile(placement, spec.tasks_per_node);
+        let hostfile_path = format!("/tmp/wren-hostfile-{}", job_name);
+
+        // Inject MPI-implementation-specific env vars (MPICH_OFI_*, UCX_NET_DEVICES, etc.)
+        if spec.mpi.is_some() {
+            let mpi_env =
+                mpi::bare_metal_env_vars(job_name, spec, &placement.nodes, &hostfile_path);
+            for (k, v) in mpi_env {
+                environment.insert(k, v);
+            }
+
+            // Generate the launcher command line for reference (user's script can use it)
+            let launcher_args = mpi::bare_metal_mpirun_args(spec, &hostfile_path);
+            environment.insert("WREN_MPI_LAUNCHER".to_string(), launcher_args.join(" "));
+        }
+
+        // Per-rank env vars (always set, even without MPI spec)
+        environment.insert("WREN_MPI_RANK".to_string(), rank.to_string());
+        environment.insert("WREN_LOCAL_RANK".to_string(), "0".to_string()); // Phase 3a: tasks_per_node=1
+
+        // Distributed training env vars (PyTorch/NCCL compatible)
+        let master_addr = placement.nodes.first().cloned().unwrap_or_default();
+        environment.insert("MASTER_ADDR".to_string(), master_addr);
+        environment.insert("MASTER_PORT".to_string(), "29500".to_string());
+        environment.insert("RANK".to_string(), rank.to_string());
+        environment.insert(
+            "WORLD_SIZE".to_string(),
+            mpi::total_ranks(spec).to_string(),
+        );
+        environment.insert("LOCAL_RANK".to_string(), "0".to_string()); // Phase 3a: 1 rank per node
+
+        // Hostfile content as env var (for scripts that want to write it themselves)
+        environment.insert(
+            "WREN_HOSTFILE_CONTENT".to_string(),
+            hostfile_content.clone(),
+        );
+        // Path where Reaper agent will write the hostfile
+        environment.insert("WREN_HOSTFILE_PATH".to_string(), hostfile_path.clone());
+
+        // Also set WREN_JOB_NAME and WREN_NUM_NODES if not already set by bare_metal_env_vars
+        environment
+            .entry("WREN_JOB_NAME".to_string())
+            .or_insert_with(|| job_name.to_string());
+        environment
+            .entry("WREN_NUM_NODES".to_string())
+            .or_insert_with(|| spec.nodes.to_string());
+        environment
+            .entry("WREN_TOTAL_RANKS".to_string())
+            .or_insert_with(|| mpi::total_ranks(spec).to_string());
+
+        // Inject user identity env vars (same as container backend)
+        if let Some(u) = user {
+            environment.insert("USER".to_string(), u.username.clone());
+            environment.insert("LOGNAME".to_string(), u.username.clone());
+            if let Some(ref home) = u.home_dir {
+                environment.insert("HOME".to_string(), home.clone());
             }
         }
 
@@ -263,6 +332,23 @@ impl ReaperBackend {
             script: reaper_spec.script.clone(),
             environment,
             working_dir: reaper_spec.working_dir.clone(),
+            uid: user.map(|u| u.uid),
+            gid: user.map(|u| u.gid),
+            username: user.map(|u| u.username.clone()),
+            home_dir: user.and_then(|u| u.home_dir.clone()),
+            supplemental_groups: user
+                .map(|u| u.supplemental_groups.clone())
+                .filter(|g| !g.is_empty()),
+            hostfile: if spec.mpi.is_some() {
+                Some(hostfile_content)
+            } else {
+                None
+            },
+            hostfile_path: if spec.mpi.is_some() {
+                Some(hostfile_path)
+            } else {
+                None
+            },
         })
     }
 }
@@ -281,7 +367,7 @@ impl ExecutionBackend for ReaperBackend {
         _namespace: &str,
         spec: &WrenJobSpec,
         placement: &Placement,
-        _user: Option<&UserIdentity>,
+        user: Option<&UserIdentity>,
     ) -> Result<LaunchResult, WrenError> {
         info!(
             job = job_name,
@@ -301,7 +387,7 @@ impl ExecutionBackend for ReaperBackend {
                 })?;
 
         for (rank, node) in placement.nodes.iter().enumerate() {
-            let request = self.build_job_request(spec, placement, rank as u32)?;
+            let request = self.build_job_request(job_name, spec, placement, rank as u32, user)?;
             let resp = self.submit_to_agent(node, &request).await?;
 
             debug!(
@@ -552,6 +638,13 @@ mod tests {
             script: "#!/bin/bash\necho hello".to_string(),
             environment: env.clone(),
             working_dir: Some("/tmp/work".to_string()),
+            uid: Some(1000),
+            gid: Some(1000),
+            username: Some("test".to_string()),
+            home_dir: Some("/home/test".to_string()),
+            supplemental_groups: Some(vec![1000, 2000]),
+            hostfile: Some("node-0 slots=4".to_string()),
+            hostfile_path: Some("/tmp/wren-hostfile-test".to_string()),
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
@@ -560,6 +653,11 @@ mod tests {
         assert_eq!(parsed.script, req.script);
         assert_eq!(parsed.environment, env);
         assert_eq!(parsed.working_dir, Some("/tmp/work".to_string()));
+        assert_eq!(parsed.uid, Some(1000));
+        assert_eq!(parsed.gid, Some(1000));
+        assert_eq!(parsed.username, Some("test".to_string()));
+        assert_eq!(parsed.home_dir, Some("/home/test".to_string()));
+        assert_eq!(parsed.supplemental_groups, Some(vec![1000, 2000]));
     }
 
     #[test]
@@ -568,11 +666,26 @@ mod tests {
             script: "echo ok".to_string(),
             environment: HashMap::new(),
             working_dir: None,
+            uid: None,
+            gid: None,
+            username: None,
+            home_dir: None,
+            supplemental_groups: None,
+            hostfile: None,
+            hostfile_path: None,
         };
         let json = serde_json::to_string(&req).expect("serialize");
         assert!(
             !json.contains("working_dir"),
             "None fields should be omitted"
+        );
+        assert!(!json.contains("uid"), "None uid should be omitted");
+        assert!(!json.contains("gid"), "None gid should be omitted");
+        assert!(!json.contains("username"), "None username should be omitted");
+        assert!(!json.contains("home_dir"), "None home_dir should be omitted");
+        assert!(
+            !json.contains("supplemental_groups"),
+            "None supplemental_groups should be omitted"
         );
     }
 
@@ -739,13 +852,13 @@ mod tests {
         let spec = make_reaper_spec(4, 2);
         let placement = make_placement(&["n0", "n1", "n2", "n3"]);
 
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
 
         // MPI env vars injected
         assert_eq!(req.environment["WREN_MPI_RANK"], "0");
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "8"); // 4 * 2
         assert_eq!(req.environment["WREN_NUM_NODES"], "4");
-        assert!(req.environment.contains_key("WREN_HOSTFILE"));
+        assert!(req.environment.contains_key("WREN_HOSTFILE_CONTENT"));
         // User-provided env preserved
         assert_eq!(req.environment["SCRATCH"], "/scratch/project");
     }
@@ -756,15 +869,15 @@ mod tests {
         let spec = make_reaper_spec(2, 4);
         let placement = make_placement(&["n0", "n1"]);
 
-        let req0 = backend.build_job_request(&spec, &placement, 0).unwrap();
-        let req1 = backend.build_job_request(&spec, &placement, 1).unwrap();
+        let req0 = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req1 = backend.build_job_request("test-job", &spec, &placement, 1, None).unwrap();
 
         assert_eq!(req0.environment["WREN_MPI_RANK"], "0");
         assert_eq!(req1.environment["WREN_MPI_RANK"], "1");
         // Hostfile and total ranks are the same for all ranks
         assert_eq!(
-            req0.environment["WREN_HOSTFILE"],
-            req1.environment["WREN_HOSTFILE"]
+            req0.environment["WREN_HOSTFILE_CONTENT"],
+            req1.environment["WREN_HOSTFILE_CONTENT"]
         );
     }
 
@@ -774,7 +887,7 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
         assert_eq!(req.working_dir, Some("/scratch/project".to_string()));
     }
 
@@ -796,7 +909,7 @@ mod tests {
             project: None,
         };
         let placement = make_placement(&["n0"]);
-        let result = backend.build_job_request(&spec, &placement, 0);
+        let result = backend.build_job_request("test-job", &spec, &placement, 0, None);
         assert!(result.is_err());
         match result.unwrap_err() {
             WrenError::ValidationError { reason } => {
@@ -812,8 +925,9 @@ mod tests {
         let spec = make_reaper_spec(3, 4);
         let placement = make_placement(&["node-0", "node-1", "node-2"]);
 
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
-        let hostfile = &req.environment["WREN_HOSTFILE"];
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        // No MPI spec → hostfile content in WREN_HOSTFILE_CONTENT env var
+        let hostfile = &req.environment["WREN_HOSTFILE_CONTENT"];
         assert_eq!(hostfile, "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4");
     }
 
@@ -830,9 +944,10 @@ mod tests {
         });
         let placement = make_placement(&["node-0", "node-1"]);
 
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
-        assert_eq!(req.environment["WREN_MPI_IMPL"], "cray-mpich");
-        assert_eq!(req.environment["WREN_FABRIC_INTERFACE"], "hsn0");
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        // With MPI spec, bare_metal_env_vars injects MPICH_OFI_IFNAME (not WREN_MPI_IMPL/WREN_FABRIC_INTERFACE)
+        assert_eq!(req.environment["MPICH_OFI_IFNAME"], "hsn0");
+        assert_eq!(req.environment["MPICH_OFI_STARTUP_CONNECT"], "1");
     }
 
     // --- build_job_request edge cases ---
@@ -848,9 +963,10 @@ mod tests {
             fabric_interface: None,
         });
         let placement = make_placement(&["n0", "n1"]);
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
-        assert_eq!(req.environment["WREN_MPI_IMPL"], "openmpi");
-        assert!(!req.environment.contains_key("WREN_FABRIC_INTERFACE"));
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        // openmpi without fabric — no UCX_NET_DEVICES set, but MPI launcher env present
+        assert!(!req.environment.contains_key("UCX_NET_DEVICES"));
+        assert!(req.environment.contains_key("WREN_MPI_LAUNCHER"));
     }
 
     #[test]
@@ -858,7 +974,7 @@ mod tests {
         let backend = ReaperBackend::new();
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
         assert_eq!(req.script, "#!/bin/bash\nmpirun ./app");
     }
 
@@ -867,11 +983,12 @@ mod tests {
         let backend = ReaperBackend::new();
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["solo-node"]);
-        let req = backend.build_job_request(&spec, &placement, 0).unwrap();
+        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "1");
         assert_eq!(req.environment["WREN_NUM_NODES"], "1");
         assert_eq!(req.environment["WREN_MPI_RANK"], "0");
-        assert_eq!(req.environment["WREN_HOSTFILE"], "solo-node slots=1");
+        // No MPI spec → hostfile content in WREN_HOSTFILE_CONTENT
+        assert_eq!(req.environment["WREN_HOSTFILE_CONTENT"], "solo-node slots=1");
     }
 
     #[test]
@@ -882,7 +999,7 @@ mod tests {
             nodes: (0..8).map(|i| format!("node-{i}")).collect(),
             score: 1.0,
         };
-        let req = backend.build_job_request(&spec, &placement, 7).unwrap();
+        let req = backend.build_job_request("test-job", &spec, &placement, 7, None).unwrap();
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "32"); // 8*4
         assert_eq!(req.environment["WREN_MPI_RANK"], "7");
         assert_eq!(req.environment["WREN_NUM_NODES"], "8");
@@ -926,5 +1043,247 @@ mod tests {
         let status: ReaperJobStatus = serde_json::from_str(json).unwrap();
         assert_eq!(status.status, ReaperJobState::Succeeded);
         assert_eq!(status.exit_code, Some(0));
+    }
+
+    // -------------------------------------------------------------------------
+    // User identity
+    // -------------------------------------------------------------------------
+
+    fn make_user_identity() -> UserIdentity {
+        UserIdentity {
+            username: "testuser".to_string(),
+            uid: 1001,
+            gid: 1001,
+            supplemental_groups: vec![1001, 5000],
+            home_dir: Some("/home/testuser".to_string()),
+            default_project: Some("my-project".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_build_job_request_with_user_identity() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(2, 1);
+        let placement = make_placement(&["n0", "n1"]);
+        let user = make_user_identity();
+
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+            .unwrap();
+
+        assert_eq!(req.uid, Some(1001));
+        assert_eq!(req.gid, Some(1001));
+        assert_eq!(req.username, Some("testuser".to_string()));
+        assert_eq!(req.home_dir, Some("/home/testuser".to_string()));
+        assert_eq!(req.supplemental_groups, Some(vec![1001, 5000]));
+
+        assert_eq!(req.environment["USER"], "testuser");
+        assert_eq!(req.environment["LOGNAME"], "testuser");
+        assert_eq!(req.environment["HOME"], "/home/testuser");
+    }
+
+    #[test]
+    fn test_build_job_request_without_user_leaves_fields_none() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["n0"]);
+
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
+
+        assert!(req.uid.is_none());
+        assert!(req.gid.is_none());
+        assert!(req.username.is_none());
+        assert!(req.home_dir.is_none());
+        assert!(req.supplemental_groups.is_none());
+        assert!(!req.environment.contains_key("USER"));
+        assert!(!req.environment.contains_key("LOGNAME"));
+        assert!(!req.environment.contains_key("HOME"));
+    }
+
+    #[test]
+    fn test_build_job_request_user_without_home_dir() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["n0"]);
+        let user = UserIdentity {
+            username: "nohome".to_string(),
+            uid: 2000,
+            gid: 2000,
+            supplemental_groups: vec![],
+            home_dir: None,
+            default_project: None,
+        };
+
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+            .unwrap();
+
+        assert_eq!(req.uid, Some(2000));
+        assert_eq!(req.gid, Some(2000));
+        assert_eq!(req.home_dir, None);
+        assert!(req.supplemental_groups.is_none()); // empty vec filtered to None
+        assert_eq!(req.environment["USER"], "nohome");
+        assert!(!req.environment.contains_key("HOME"));
+    }
+
+    #[test]
+    fn test_build_job_request_user_identity_serde_roundtrip() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["n0"]);
+        let user = make_user_identity();
+
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+            .unwrap();
+        let json = serde_json::to_string(&req).expect("serialize");
+        let parsed: ReaperJobRequest = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed.uid, req.uid);
+        assert_eq!(parsed.gid, req.gid);
+        assert_eq!(parsed.username, req.username);
+        assert_eq!(parsed.home_dir, req.home_dir);
+        assert_eq!(parsed.supplemental_groups, req.supplemental_groups);
+    }
+
+    #[test]
+    fn test_build_job_request_none_user_serde_omits_fields() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["n0"]);
+
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
+        let json = serde_json::to_string(&req).expect("serialize");
+
+        assert!(!json.contains("uid"), "None uid should be omitted: {json}");
+        assert!(!json.contains("gid"), "None gid should be omitted: {json}");
+        assert!(
+            !json.contains("username"),
+            "None username should be omitted: {json}"
+        );
+        assert!(
+            !json.contains("home_dir"),
+            "None home_dir should be omitted: {json}"
+        );
+        assert!(
+            !json.contains("supplemental_groups"),
+            "None groups should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn test_build_job_request_user_env_vars_dont_override_user_provided() {
+        let backend = ReaperBackend::new();
+        let mut spec = make_reaper_spec(1, 1);
+        // User provides their own USER env var in the reaper spec
+        spec.reaper
+            .as_mut()
+            .unwrap()
+            .environment
+            .insert("USER".to_string(), "custom-user".to_string());
+        let placement = make_placement(&["n0"]);
+        let user = make_user_identity();
+
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+            .unwrap();
+
+        // UserIdentity should override user-provided env var (identity is authoritative)
+        assert_eq!(req.environment["USER"], "testuser");
+    }
+
+    // -------------------------------------------------------------------------
+    // Distributed training env vars
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_build_job_request_distributed_training_env_vars() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(4, 1);
+        let placement = make_placement(&["node-0", "node-1", "node-2", "node-3"]);
+
+        let req = backend.build_job_request("train-job", &spec, &placement, 2, None).unwrap();
+
+        // Distributed training env vars (PyTorch/NCCL compatible)
+        assert_eq!(req.environment["MASTER_ADDR"], "node-0");
+        assert_eq!(req.environment["MASTER_PORT"], "29500");
+        assert_eq!(req.environment["RANK"], "2");
+        assert_eq!(req.environment["WORLD_SIZE"], "4");
+        assert_eq!(req.environment["LOCAL_RANK"], "0");
+    }
+
+    #[test]
+    fn test_build_job_request_with_mpi_spec_uses_bare_metal_env() {
+        use wren_core::MPISpec;
+        let backend = ReaperBackend::new();
+        let mut spec = make_reaper_spec(2, 1);
+        spec.mpi = Some(MPISpec {
+            implementation: "cray-mpich".to_string(),
+            ssh_auth: false,
+            fabric_interface: Some("hsn0".to_string()),
+        });
+        let placement = make_placement(&["node-0", "node-1"]);
+
+        let req = backend.build_job_request("mpi-job", &spec, &placement, 0, None).unwrap();
+
+        // cray-mpich specific env vars from bare_metal_env_vars()
+        assert_eq!(req.environment["MPICH_OFI_STARTUP_CONNECT"], "1");
+        assert_eq!(req.environment["MPICH_OFI_NUM_NICS"], "1");
+        assert_eq!(req.environment["MPICH_OFI_IFNAME"], "hsn0");
+        // Launcher command reference — cray-mpich uses srun
+        assert!(req.environment["WREN_MPI_LAUNCHER"].contains("srun"));
+    }
+
+    #[test]
+    fn test_build_job_request_hostfile_fields() {
+        use wren_core::MPISpec;
+        let backend = ReaperBackend::new();
+        let mut spec = make_reaper_spec(2, 1);
+        spec.mpi = Some(MPISpec {
+            implementation: "openmpi".to_string(),
+            ssh_auth: false,
+            fabric_interface: None,
+        });
+        let placement = make_placement(&["n0", "n1"]);
+
+        let req = backend.build_job_request("hf-job", &spec, &placement, 0, None).unwrap();
+
+        assert!(req.hostfile.is_some());
+        assert_eq!(req.hostfile.as_deref(), Some("n0 slots=1\nn1 slots=1"));
+        assert_eq!(req.hostfile_path.as_deref(), Some("/tmp/wren-hostfile-hf-job"));
+    }
+
+    #[test]
+    fn test_build_job_request_no_mpi_spec_no_hostfile_fields() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(1, 1);
+        let placement = make_placement(&["n0"]);
+
+        let req = backend.build_job_request("no-mpi", &spec, &placement, 0, None).unwrap();
+
+        assert!(req.hostfile.is_none());
+        assert!(req.hostfile_path.is_none());
+        // But distributed training env vars should still be set
+        assert_eq!(req.environment["MASTER_ADDR"], "n0");
+        assert_eq!(req.environment["RANK"], "0");
+        assert_eq!(req.environment["WORLD_SIZE"], "1");
+    }
+
+    #[test]
+    fn test_build_job_request_master_addr_is_first_node() {
+        let backend = ReaperBackend::new();
+        let spec = make_reaper_spec(3, 1);
+        let placement = make_placement(&["alpha", "beta", "gamma"]);
+
+        let req0 = backend.build_job_request("j", &spec, &placement, 0, None).unwrap();
+        let req2 = backend.build_job_request("j", &spec, &placement, 2, None).unwrap();
+
+        // MASTER_ADDR is always the first node, regardless of rank
+        assert_eq!(req0.environment["MASTER_ADDR"], "alpha");
+        assert_eq!(req2.environment["MASTER_ADDR"], "alpha");
     }
 }

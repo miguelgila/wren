@@ -302,19 +302,53 @@ up the WrenUser when creating pods (securityContext) or dispatching to Reaper
 - [x] Sequential job IDs (Slurm-style, ConfigMap-backed counter)
 - [x] CLI integration tests (`--only-cli` flag, 6 tests)
 
-### Phase 3: Reaper Integration (v0.3.0)
+### Phase 3: Reaper Integration (v0.3.0) — IN PROGRESS
 **Goal:** Bare-metal execution backend via Reaper.
 
-- [ ] Define Reaper backend trait implementation
-- [ ] Implement communication protocol with Reaper agents on nodes
-- [ ] Job script distribution to Reaper agents
-- [ ] Process lifecycle management (launch, monitor, terminate)
-- [ ] MPI bootstrap for bare-metal mode (PMIx or wren-launch)
-- [ ] Shared resource tracking between container and reaper backends
-- [ ] Reaper: accept `uid`/`gid`/`username`/`homeDir` in job request
-- [ ] Reaper: use `Command::uid()`/`.gid()` to drop privileges before exec
-- [ ] Reaper: inject `USER`/`HOME`/`LOGNAME` env vars (no NSS needed on node)
+#### Phase 3a: Core Integration — COMPLETE
+- [x] Define Reaper backend trait implementation (`ReaperBackend` with HTTP client)
+- [x] Implement communication protocol with Reaper agents on nodes (REST API: POST/GET/DELETE /api/v1/jobs)
+- [x] Job script distribution to Reaper agents
+- [x] Process lifecycle management (launch, monitor, terminate via HTTP)
+- [x] Reaper: accept `uid`/`gid`/`username`/`homeDir` in job request
+- [x] Reaper: use `Command::uid()`/`.gid()` to drop privileges before exec (setgroups → setgid → setuid)
+- [x] Reaper: inject `USER`/`HOME`/`LOGNAME` env vars (same as container backend)
+- [x] MPI environment variables for bare-metal (MPICH_OFI_*, UCX_NET_DEVICES, per-implementation)
+- [x] Distributed training env vars (MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE, LOCAL_RANK)
+- [x] Hostfile distribution (content in request JSON, Reaper writes to disk)
+- [x] Shared resource tracking between container and reaper backends
 - [ ] Integration test with Reaper
+
+#### Phase 3b: Multi-Task & Resource Binding — PLANNED
+**Goal:** Support `tasks_per_node > 1` with CPU affinity and GPU binding (replaces Slurm's `srun` intra-node functionality).
+
+- [ ] Extend `ReaperJobRequest` with `tasks_per_node`, `cpus_per_task`, `gpus_per_task` fields
+- [ ] Reaper agent: multi-process spawning (fork N processes per job request)
+- [ ] CPU affinity binding via `sched_setaffinity()` or `numactl` (hwloc-aware)
+- [ ] GPU device binding via `CUDA_VISIBLE_DEVICES` (NVIDIA), `ROCR_VISIBLE_DEVICES` (AMD), `ZE_AFFINITY_MASK` (Intel)
+- [ ] NUMA-aware placement (pin ranks to NUMA domains close to their assigned GPUs)
+- [ ] Per-task local rank env vars (`WREN_LOCAL_RANK`, `LOCAL_RANK`)
+- [ ] Aggregate status reporting (job running if any task running, failed if any task failed)
+- [ ] Per-task exit code tracking
+- [ ] Wren controller: topology discovery (query node GPU/NUMA topology via Reaper agent or node labels)
+
+**Design notes:**
+- Reaper agent handles intra-node binding decisions locally (can query `/sys/devices/system/node/`, `nvidia-smi`)
+- Wren controller specifies *what* resources per task; Reaper decides *which* specific devices
+- Phase 3a supports `tasks_per_node=1` only (single rank per node, no binding needed)
+
+#### Phase 3c: MPI Process Management — PLANNED
+**Goal:** Full PMI bootstrap for traditional MPI applications without SSH.
+
+- [ ] PMI key-value store service (lightweight, in Wren controller or standalone)
+- [ ] PMIx integration for cray-mpich and OpenMPI
+- [ ] Shared-filesystem PMI fallback (ranks exchange connection info via files on Lustre/GPFS)
+- [ ] Wren-managed process group coordination (barrier, abort propagation)
+- [ ] Integration test with actual MPI hello-world on multi-node
+
+**Design rationale:** Wren directly launches MPI ranks on each node via Reaper (replacing `srun`).
+No SSH between compute nodes. PMI bootstrap via Wren-managed KVS or shared filesystem.
+For ML training workloads (PyTorch/NCCL), MASTER_ADDR/RANK/WORLD_SIZE from Phase 3a suffice.
 
 ### Phase 4: Advanced Scheduling (v0.4.0) — MOSTLY COMPLETE
 **Goal:** Slurm-level scheduling sophistication.
