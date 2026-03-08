@@ -1,0 +1,18 @@
+# WrenUser maps a username to a Unix identity for job execution.
+# The controller looks up this CRD when creating pods (container backend)
+# or dispatching jobs to Reaper agents (reaper backend).
+#
+# In production, WrenUser CRDs are typically synced from LDAP/AD via a CronJob.
+# For this example, we create one manually.
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: researcher
+spec:
+  uid: 1000
+  gid: 1000
+  supplementalGroups:
+    - 1000
+    - 5000
+  homeDir: "/home/researcher"
+  defaultProject: "demo"

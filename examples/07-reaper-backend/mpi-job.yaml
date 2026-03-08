@@ -1,0 +1,29 @@
+# Multi-node Reaper job with MPI — runs a script on 2 nodes with MPI environment.
+# The controller generates MASTER_ADDR, RANK, WORLD_SIZE, and a hostfile
+# for each node, then sends job requests to the Reaper agents.
+#
+# Prerequisites:
+#   kubectl apply -f user.yaml
+#   wren submit mpi-job.yaml
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: reaper-mpi-hello
+  annotations:
+    wren.giar.dev/user: researcher
+spec:
+  nodes: 2
+  tasksPerNode: 1
+  walltime: "10m"
+  backend: reaper
+  reaper:
+    script: |
+      #!/bin/bash
+      echo "Rank ${WREN_MPI_RANK} of ${WREN_TOTAL_RANKS} on $(hostname)"
+      echo "Master: ${MASTER_ADDR}:${MASTER_PORT}"
+      echo "Hostfile content: ${WREN_HOSTFILE_CONTENT}"
+    environment:
+      SCRATCH: /scratch/project
+  mpi:
+    implementation: cray-mpich
+    fabricInterface: hsn0
