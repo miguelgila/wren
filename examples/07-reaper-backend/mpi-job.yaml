@@ -1,6 +1,32 @@
-# Multi-node Reaper job with MPI — runs a script on 2 nodes with MPI environment.
-# The controller generates MASTER_ADDR, RANK, WORLD_SIZE, and a hostfile
-# for each node, then sends job requests to the Reaper agents.
+# Multi-node Reaper job with MPI — runs a script on 2 bare-metal nodes.
+#
+# What happens when you submit this:
+#   1. Controller looks up WrenUser "researcher" → resolves uid/gid
+#   2. Gang scheduler allocates 2 nodes (all-or-nothing)
+#   3. For each node, controller builds a job request and POSTs it to
+#      the Reaper agent's HTTP API on that node
+#   4. Each Reaper agent enters the host mount namespace, drops privileges
+#      to the resolved uid/gid, writes the hostfile, and runs the script
+#
+# Environment variables injected by the controller (per rank):
+#   WREN_MPI_RANK        — rank index (0, 1, ...)
+#   WREN_TOTAL_RANKS     — total number of ranks (nodes * tasksPerNode)
+#   WREN_NUM_NODES       — number of allocated nodes
+#   MASTER_ADDR          — hostname of rank 0 (for PyTorch/NCCL)
+#   MASTER_PORT          — port for distributed training (default 29500)
+#   RANK                 — alias for WREN_MPI_RANK
+#   WORLD_SIZE           — alias for WREN_TOTAL_RANKS
+#   LOCAL_RANK           — local rank within the node (0 in Phase 3a)
+#   WREN_HOSTFILE_CONTENT— full hostfile text (e.g. "node-0 slots=1\nnode-1 slots=1")
+#   USER, HOME, LOGNAME  — from WrenUser CRD (when user identity is set)
+#
+# When mpi.implementation is set, additional MPI-specific env vars are injected:
+#   cray-mpich:  MPICH_OFI_STARTUP_CONNECT=1, MPICH_OFI_IFNAME=<fabricInterface>
+#   openmpi:     (hostfile path passed via request)
+#   intel-mpi:   I_MPI_FABRICS, I_MPI_OFI_PROVIDER
+#
+# A hostfile is also written to disk on each node at /tmp/wren-hostfile-<job-name>
+# and cleaned up automatically when the job completes.
 #
 # Prerequisites:
 #   kubectl apply -f user.yaml
@@ -10,12 +36,12 @@ kind: WrenJob
 metadata:
   name: reaper-mpi-hello
   annotations:
-    wren.giar.dev/user: researcher
+    wren.giar.dev/user: researcher   # maps to WrenUser CRD → uid/gid
 spec:
-  nodes: 2
-  tasksPerNode: 1
-  walltime: "10m"
-  backend: reaper
+  nodes: 2                           # gang-schedule on exactly 2 nodes
+  tasksPerNode: 1                    # 1 rank per node (Phase 3a limitation)
+  walltime: "10m"                    # kill after 10 minutes
+  backend: reaper                    # bare-metal execution via Reaper agent
   reaper:
     script: |
       #!/bin/bash
@@ -23,7 +49,7 @@ spec:
       echo "Master: ${MASTER_ADDR}:${MASTER_PORT}"
       echo "Hostfile content: ${WREN_HOSTFILE_CONTENT}"
     environment:
-      SCRATCH: /scratch/project
+      SCRATCH: /scratch/project      # user-defined env vars
   mpi:
-    implementation: cray-mpich
-    fabricInterface: hsn0
+    implementation: cray-mpich       # cray-mpich | openmpi | intel-mpi
+    fabricInterface: hsn0            # network interface for MPI traffic
