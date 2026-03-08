@@ -294,10 +294,7 @@ impl ReaperBackend {
         environment.insert("MASTER_ADDR".to_string(), master_addr);
         environment.insert("MASTER_PORT".to_string(), "29500".to_string());
         environment.insert("RANK".to_string(), rank.to_string());
-        environment.insert(
-            "WORLD_SIZE".to_string(),
-            mpi::total_ranks(spec).to_string(),
-        );
+        environment.insert("WORLD_SIZE".to_string(), mpi::total_ranks(spec).to_string());
         environment.insert("LOCAL_RANK".to_string(), "0".to_string()); // Phase 3a: 1 rank per node
 
         // Hostfile content as env var (for scripts that want to write it themselves)
@@ -681,8 +678,14 @@ mod tests {
         );
         assert!(!json.contains("uid"), "None uid should be omitted");
         assert!(!json.contains("gid"), "None gid should be omitted");
-        assert!(!json.contains("username"), "None username should be omitted");
-        assert!(!json.contains("home_dir"), "None home_dir should be omitted");
+        assert!(
+            !json.contains("username"),
+            "None username should be omitted"
+        );
+        assert!(
+            !json.contains("home_dir"),
+            "None home_dir should be omitted"
+        );
         assert!(
             !json.contains("supplemental_groups"),
             "None supplemental_groups should be omitted"
@@ -852,7 +855,9 @@ mod tests {
         let spec = make_reaper_spec(4, 2);
         let placement = make_placement(&["n0", "n1", "n2", "n3"]);
 
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
 
         // MPI env vars injected
         assert_eq!(req.environment["WREN_MPI_RANK"], "0");
@@ -869,8 +874,12 @@ mod tests {
         let spec = make_reaper_spec(2, 4);
         let placement = make_placement(&["n0", "n1"]);
 
-        let req0 = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
-        let req1 = backend.build_job_request("test-job", &spec, &placement, 1, None).unwrap();
+        let req0 = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
+        let req1 = backend
+            .build_job_request("test-job", &spec, &placement, 1, None)
+            .unwrap();
 
         assert_eq!(req0.environment["WREN_MPI_RANK"], "0");
         assert_eq!(req1.environment["WREN_MPI_RANK"], "1");
@@ -887,7 +896,9 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
         assert_eq!(req.working_dir, Some("/scratch/project".to_string()));
     }
 
@@ -925,7 +936,9 @@ mod tests {
         let spec = make_reaper_spec(3, 4);
         let placement = make_placement(&["node-0", "node-1", "node-2"]);
 
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
         // No MPI spec → hostfile content in WREN_HOSTFILE_CONTENT env var
         let hostfile = &req.environment["WREN_HOSTFILE_CONTENT"];
         assert_eq!(hostfile, "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4");
@@ -944,7 +957,9 @@ mod tests {
         });
         let placement = make_placement(&["node-0", "node-1"]);
 
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
         // With MPI spec, bare_metal_env_vars injects MPICH_OFI_IFNAME (not WREN_MPI_IMPL/WREN_FABRIC_INTERFACE)
         assert_eq!(req.environment["MPICH_OFI_IFNAME"], "hsn0");
         assert_eq!(req.environment["MPICH_OFI_STARTUP_CONNECT"], "1");
@@ -963,7 +978,9 @@ mod tests {
             fabric_interface: None,
         });
         let placement = make_placement(&["n0", "n1"]);
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
         // openmpi without fabric — no UCX_NET_DEVICES set, but MPI launcher env present
         assert!(!req.environment.contains_key("UCX_NET_DEVICES"));
         assert!(req.environment.contains_key("WREN_MPI_LAUNCHER"));
@@ -974,7 +991,9 @@ mod tests {
         let backend = ReaperBackend::new();
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
         assert_eq!(req.script, "#!/bin/bash\nmpirun ./app");
     }
 
@@ -983,12 +1002,17 @@ mod tests {
         let backend = ReaperBackend::new();
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["solo-node"]);
-        let req = backend.build_job_request("test-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 0, None)
+            .unwrap();
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "1");
         assert_eq!(req.environment["WREN_NUM_NODES"], "1");
         assert_eq!(req.environment["WREN_MPI_RANK"], "0");
         // No MPI spec → hostfile content in WREN_HOSTFILE_CONTENT
-        assert_eq!(req.environment["WREN_HOSTFILE_CONTENT"], "solo-node slots=1");
+        assert_eq!(
+            req.environment["WREN_HOSTFILE_CONTENT"],
+            "solo-node slots=1"
+        );
     }
 
     #[test]
@@ -999,7 +1023,9 @@ mod tests {
             nodes: (0..8).map(|i| format!("node-{i}")).collect(),
             score: 1.0,
         };
-        let req = backend.build_job_request("test-job", &spec, &placement, 7, None).unwrap();
+        let req = backend
+            .build_job_request("test-job", &spec, &placement, 7, None)
+            .unwrap();
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "32"); // 8*4
         assert_eq!(req.environment["WREN_MPI_RANK"], "7");
         assert_eq!(req.environment["WREN_NUM_NODES"], "8");
@@ -1206,7 +1232,9 @@ mod tests {
         let spec = make_reaper_spec(4, 1);
         let placement = make_placement(&["node-0", "node-1", "node-2", "node-3"]);
 
-        let req = backend.build_job_request("train-job", &spec, &placement, 2, None).unwrap();
+        let req = backend
+            .build_job_request("train-job", &spec, &placement, 2, None)
+            .unwrap();
 
         // Distributed training env vars (PyTorch/NCCL compatible)
         assert_eq!(req.environment["MASTER_ADDR"], "node-0");
@@ -1228,7 +1256,9 @@ mod tests {
         });
         let placement = make_placement(&["node-0", "node-1"]);
 
-        let req = backend.build_job_request("mpi-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("mpi-job", &spec, &placement, 0, None)
+            .unwrap();
 
         // cray-mpich specific env vars from bare_metal_env_vars()
         assert_eq!(req.environment["MPICH_OFI_STARTUP_CONNECT"], "1");
@@ -1250,11 +1280,16 @@ mod tests {
         });
         let placement = make_placement(&["n0", "n1"]);
 
-        let req = backend.build_job_request("hf-job", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("hf-job", &spec, &placement, 0, None)
+            .unwrap();
 
         assert!(req.hostfile.is_some());
         assert_eq!(req.hostfile.as_deref(), Some("n0 slots=1\nn1 slots=1"));
-        assert_eq!(req.hostfile_path.as_deref(), Some("/tmp/wren-hostfile-hf-job"));
+        assert_eq!(
+            req.hostfile_path.as_deref(),
+            Some("/tmp/wren-hostfile-hf-job")
+        );
     }
 
     #[test]
@@ -1263,7 +1298,9 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend.build_job_request("no-mpi", &spec, &placement, 0, None).unwrap();
+        let req = backend
+            .build_job_request("no-mpi", &spec, &placement, 0, None)
+            .unwrap();
 
         assert!(req.hostfile.is_none());
         assert!(req.hostfile_path.is_none());
@@ -1279,8 +1316,12 @@ mod tests {
         let spec = make_reaper_spec(3, 1);
         let placement = make_placement(&["alpha", "beta", "gamma"]);
 
-        let req0 = backend.build_job_request("j", &spec, &placement, 0, None).unwrap();
-        let req2 = backend.build_job_request("j", &spec, &placement, 2, None).unwrap();
+        let req0 = backend
+            .build_job_request("j", &spec, &placement, 0, None)
+            .unwrap();
+        let req2 = backend
+            .build_job_request("j", &spec, &placement, 2, None)
+            .unwrap();
 
         // MASTER_ADDR is always the first node, regardless of rank
         assert_eq!(req0.environment["MASTER_ADDR"], "alpha");
