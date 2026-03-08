@@ -278,6 +278,7 @@ mod tests {
             }),
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 
@@ -357,6 +358,7 @@ mod tests {
             }),
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 
@@ -377,6 +379,7 @@ mod tests {
             }),
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 

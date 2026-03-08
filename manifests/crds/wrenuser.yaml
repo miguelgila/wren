@@ -1,0 +1,72 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: wrenusers.wren.giar.dev
+spec:
+  group: wren.giar.dev
+  names:
+    categories: []
+    kind: WrenUser
+    plural: wrenusers
+    shortNames: []
+    singular: wrenuser
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.uid
+      name: UID
+      type: integer
+    - jsonPath: .spec.gid
+      name: GID
+      type: integer
+    - jsonPath: .spec.homeDir
+      name: HomeDir
+      type: string
+    - jsonPath: .spec.defaultProject
+      name: Project
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for WrenUserSpec via `CustomResource`
+        properties:
+          spec:
+            description: WrenUser maps Kubernetes usernames to Unix UID/GID for execution identity. Cluster-scoped — one per user across all namespaces.
+            properties:
+              defaultProject:
+                description: Default project for fair-share grouping
+                nullable: true
+                type: string
+              gid:
+                description: Primary Unix GID
+                format: uint32
+                minimum: 0.0
+                type: integer
+              homeDir:
+                description: HOME env var and optional volume mount path
+                nullable: true
+                type: string
+              supplementalGroups:
+                default: []
+                description: Additional GIDs (e.g., project groups)
+                items:
+                  format: uint32
+                  minimum: 0.0
+                  type: integer
+                type: array
+              uid:
+                description: Unix UID for process execution
+                format: uint32
+                minimum: 0.0
+                type: integer
+            required:
+            - gid
+            - uid
+            type: object
+        required:
+        - spec
+        title: WrenUser
+        type: object
+    served: true
+    storage: true
+    subresources: {}

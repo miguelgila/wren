@@ -4,10 +4,11 @@ pub mod error;
 pub mod types;
 
 // Re-export commonly used items
+pub use backend::UserIdentity;
 pub use crd::{
     ContainerSpec, DependencyType, EnvVar, JobDependency, MPISpec, ReaperSpec,
     ResourceRequirements, TopologySpec, VolumeMount, WrenJob, WrenJobSpec, WrenJobStatus,
-    WrenQueue, WrenQueueSpec,
+    WrenQueue, WrenQueueSpec, WrenUser, WrenUserSpec,
 };
 pub use error::{Result, WrenError};
 pub use types::{

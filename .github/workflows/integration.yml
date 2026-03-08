@@ -24,6 +24,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,10 +52,14 @@ jobs:
           retention-days: 1
 
   kind-integration:
-    name: Kind Integration Tests
+    name: Integration (${{ matrix.suite }})
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [shell, user, cli]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -78,16 +83,16 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/wren-controller docker/
           docker build -f docker/Dockerfile.controller --target runtime-prebuilt -t wren-controller:latest docker/
           rm docker/wren-controller
-      - name: Run integration tests
+      - name: Run ${{ matrix.suite }} tests
         uses: nick-fields/retry@v3
         with:
-          timeout_minutes: 15
+          timeout_minutes: 10
           max_attempts: 2
-          command: SKIP_BUILD=1 ./scripts/run-integration-tests.sh
+          command: SKIP_BUILD=1 TESTS=${{ matrix.suite }} ./scripts/run-integration-tests.sh
       - name: Upload integration logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-logs
+          name: integration-logs-${{ matrix.suite }}
           path: /tmp/wren-integration-logs/
           retention-days: 7

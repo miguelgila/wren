@@ -96,7 +96,58 @@ spec:
 kubectl apply -f queue.yaml
 ```
 
-### 4. Submit a Job
+### 4. Register Users
+
+Every job requires a valid user identity — Wren never runs jobs as root or anonymous. Create a `WrenUser` for each person who will submit jobs:
+
+```yaml
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: miguel              # must match the Kubernetes username
+spec:
+  uid: 1001                 # Unix UID for file ownership
+  gid: 1001                 # Primary GID
+  supplementalGroups:       # Additional groups (project groups, etc.)
+    - 1001
+    - 5000
+  homeDir: "/home/miguel"   # Sets HOME env var in pods
+  defaultProject: "climate-sim"
+```
+
+```bash
+kubectl apply -f wrenuser.yaml
+```
+
+WrenUser is cluster-scoped (no namespace) — one per user, shared across all namespaces. The controller uses it to set `runAsUser`/`runAsGroup` on pods and inject `USER`/`HOME` env vars.
+
+**Adding users in bulk** — for teams with existing LDAP/AD, a CronJob can sync users automatically:
+
+```bash
+# One-liner: export LDAP users to WrenUser CRDs
+ldapsearch -x -b "ou=people,dc=example,dc=org" \
+  "(objectClass=posixAccount)" uid uidNumber gidNumber homeDirectory | \
+  awk '/^uid:/{u=$2} /^uidNumber:/{n=$2} /^gidNumber:/{g=$2} /^homeDirectory:/{h=$2; \
+    printf "apiVersion: wren.giar.dev/v1alpha1\nkind: WrenUser\nmetadata:\n  name: %s\nspec:\n  uid: %s\n  gid: %s\n  homeDir: \"%s\"\n---\n", u, n, g, h}' | \
+  kubectl apply -f -
+```
+
+Or define users in Helm values for GitOps-managed clusters:
+
+```yaml
+# values.yaml
+users:
+  - name: miguel
+    uid: 1001
+    gid: 1001
+    homeDir: /home/miguel
+  - name: alice
+    uid: 1002
+    gid: 1002
+    homeDir: /home/alice
+```
+
+### 5. Submit a Job
 
 Create a `WrenJob` — the primary user-facing CRD (equivalent to Slurm's `sbatch`):
 
@@ -141,7 +192,7 @@ wren logs my-simulation --rank 0
 wren cancel my-simulation
 ```
 
-### 5. Simple (Non-MPI) Jobs
+### 6. Simple (Non-MPI) Jobs
 
 For single-node or non-MPI workloads, just omit the `mpi` section. Wren runs the command directly without a launcher/worker pattern:
 
@@ -198,7 +249,7 @@ Wren is structured as a Cargo workspace with four crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `wren-core` | CRD definitions (`WrenJob`, `WrenQueue`), shared types, backend trait |
+| `wren-core` | CRD definitions (`WrenJob`, `WrenQueue`, `WrenUser`), shared types, backend trait |
 | `wren-scheduler` | Pure scheduling algorithms (gang, topology, backfill, fair-share, dependencies) — no K8s deps |
 | `wren-controller` | Kubernetes controller: reconciliation loop, pod/service management, metrics |
 | `wren-cli` | CLI tool (`wren submit`, `queue`, `cancel`, `status`, `logs`) |
@@ -218,6 +269,7 @@ Wren is structured as a Cargo workspace with four crates:
 - **Fair-share** — per-user/project priority adjustment with exponential usage decay
 - **Job dependencies** — `afterOk`, `afterAny`, `afterNotOk` with cycle detection
 - **MPI bootstrap** — automatic hostfile generation, SSH key distribution, headless Service
+- **Multi-user identity** — WrenUser CRD maps K8s users to Unix UID/GID; pods run as the correct user
 - **Walltime enforcement** — SIGTERM after walltime, SIGKILL after grace period
 - **Completed job preservation** — 24h TTL for log retrieval after completion
 - **Leader election** — HA controller deployment
@@ -235,6 +287,7 @@ The [`manifests/examples/`](manifests/examples/) directory contains ready-to-use
 | [`simple-mpi.yaml`](manifests/examples/simple-mpi.yaml) | Basic 2-node job with busybox |
 | [`gpu-training.yaml`](manifests/examples/gpu-training.yaml) | Multi-node GPU training job |
 | [`reaper-job.yaml`](manifests/examples/reaper-job.yaml) | Bare-metal execution via Reaper |
+| [`wrenuser.yaml`](manifests/examples/wrenuser.yaml) | User identity mapping (UID/GID) |
 
 ## Requirements
 

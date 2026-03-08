@@ -4,6 +4,18 @@ use crate::crd::WrenJobSpec;
 use crate::error::WrenError;
 use crate::types::Placement;
 
+/// Resolved user identity for job execution.
+/// Populated by the controller from WrenUser CRD lookup.
+#[derive(Clone, Debug, Default)]
+pub struct UserIdentity {
+    pub username: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub supplemental_groups: Vec<u32>,
+    pub home_dir: Option<String>,
+    pub default_project: Option<String>,
+}
+
 /// Result of launching a job via an execution backend.
 #[derive(Clone, Debug)]
 pub struct LaunchResult {
@@ -26,6 +38,7 @@ pub trait ExecutionBackend: Send + Sync {
         namespace: &str,
         spec: &WrenJobSpec,
         placement: &Placement,
+        user: Option<&UserIdentity>,
     ) -> Result<LaunchResult, WrenError>;
 
     /// Check the health/status of a running job's workloads.

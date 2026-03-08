@@ -4,9 +4,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use wren_core::backend::{BackendJobStatus, ExecutionBackend};
-use wren_core::{ClusterState, JobState, WalltimeDuration, WrenError, WrenJob, WrenJobStatus};
+use wren_core::{
+    ClusterState, JobState, UserIdentity, WalltimeDuration, WrenError, WrenJob, WrenJobStatus,
+};
 use wren_scheduler::gang::GangScheduler;
 
+use crate::job_id::JobIdAllocator;
 use crate::metrics::Metrics;
 use crate::reservation::ReservationManager;
 
@@ -17,6 +20,7 @@ pub struct ReconcilerContext {
     pub backend: Arc<dyn ExecutionBackend>,
     pub metrics: Metrics,
     pub reservations: RwLock<ReservationManager>,
+    pub job_id_allocator: JobIdAllocator,
 }
 
 /// Reconcile a single WrenJob. Called by the controller whenever the resource changes.
@@ -27,16 +31,28 @@ pub async fn reconcile(job: &WrenJob, ctx: &ReconcilerContext) -> Result<(), Wre
     let status = job.status.as_ref().cloned().unwrap_or_default();
     let spec = &job.spec;
 
+    // Resolve user identity from wren.giar.dev/user annotation
+    let user = crate::user_identity::resolve_user_identity(
+        &ctx.client,
+        job.metadata.annotations.as_ref(),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        warn!(job = name, error = %e, "failed to resolve user identity, continuing without");
+        None
+    });
+
     info!(
         job = name,
         namespace,
         state = %status.state,
+        user = user.as_ref().map(|u| u.username.as_str()).unwrap_or("<none>"),
         "reconciling WrenJob"
     );
 
     match status.state {
         JobState::Pending => handle_pending(name, namespace, spec, ctx).await,
-        JobState::Scheduling => handle_scheduling(name, namespace, spec, ctx).await,
+        JobState::Scheduling => handle_scheduling(name, namespace, spec, user.as_ref(), ctx).await,
         JobState::Running => handle_running(name, namespace, spec, &status, ctx).await,
         JobState::Succeeded
         | JobState::Failed
@@ -60,8 +76,26 @@ async fn handle_pending(
         return Ok(());
     }
 
-    // Transition to Scheduling
-    update_status(name, namespace, JobState::Scheduling, None, ctx).await?;
+    // Allocate a sequential job ID
+    let job_id = ctx.job_id_allocator.allocate().await?;
+    info!(job = name, job_id, "assigned job ID");
+
+    // Transition to Scheduling with the assigned job ID
+    let api: Api<WrenJob> = Api::namespaced(ctx.client.clone(), namespace);
+    let status = serde_json::json!({
+        "status": {
+            "jobId": job_id,
+            "state": "Scheduling",
+        }
+    });
+    api.patch_status(
+        name,
+        &PatchParams::apply("wren-controller"),
+        &Patch::Merge(&status),
+    )
+    .await
+    .map_err(WrenError::KubeError)?;
+
     ctx.metrics
         .record_job_state_change(&spec.queue, "Pending", "Scheduling");
     Ok(())
@@ -71,8 +105,19 @@ async fn handle_scheduling(
     name: &str,
     namespace: &str,
     spec: &wren_core::WrenJobSpec,
+    user: Option<&UserIdentity>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
+    // Security: every job must have a resolved user identity.
+    // Jobs without a valid WrenUser are rejected to prevent running as root.
+    if user.is_none() {
+        let reason = "no valid WrenUser identity resolved — job requires a \
+                       wren.giar.dev/user annotation pointing to an existing WrenUser with non-root uid";
+        warn!(job = name, "rejecting job: {}", reason);
+        update_status(name, namespace, JobState::Failed, Some(reason), ctx).await?;
+        return Ok(());
+    }
+
     // Attempt gang scheduling
     let cluster = ctx.cluster_state.read().await;
 
@@ -125,7 +170,11 @@ async fn handle_scheduling(
             }
 
             // Launch via backend
-            match ctx.backend.launch(name, namespace, spec, &placement).await {
+            match ctx
+                .backend
+                .launch(name, namespace, spec, &placement, user)
+                .await
+            {
                 Ok(launch_result) => {
                     // Release reservation — resources are now committed
                     {
@@ -502,6 +551,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 

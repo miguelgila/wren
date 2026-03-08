@@ -3008,6 +3008,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "futures",
  "hostname",

@@ -3,7 +3,7 @@ use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
-use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
+use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult, UserIdentity};
 use wren_core::{Placement, WrenError, WrenJobSpec};
 
 use crate::mpi;
@@ -281,6 +281,7 @@ impl ExecutionBackend for ReaperBackend {
         _namespace: &str,
         spec: &WrenJobSpec,
         placement: &Placement,
+        _user: Option<&UserIdentity>,
     ) -> Result<LaunchResult, WrenError> {
         info!(
             job = job_name,
@@ -478,6 +479,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         }
     }
 
@@ -791,6 +793,7 @@ mod tests {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         };
         let placement = make_placement(&["n0"]);
         let result = backend.build_job_request(&spec, &placement, 0);

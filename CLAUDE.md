@@ -79,7 +79,7 @@ wren/
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── crd.rs         # WrenJob, WrenQueue CRDs
+│   │       ├── crd.rs         # WrenJob, WrenQueue, WrenUser CRDs
 │   │       ├── types.rs       # Placement, JobStatus, TopologyConstraint
 │   │       ├── backend.rs     # ExecutionBackend trait
 │   │       └── error.rs       # Error types
@@ -102,6 +102,7 @@ wren/
 │   │   └── src/
 │   │       ├── main.rs        # Entry point, controller setup
 │   │       ├── reconciler.rs  # WrenJob reconciliation loop
+│   │       ├── job_id.rs      # Sequential job ID allocator (ConfigMap-backed)
 │   │       ├── node_watcher.rs# Node topology discovery and tracking
 │   │       ├── container.rs   # Container execution backend
 │   │       ├── reaper.rs      # Reaper execution backend
@@ -237,6 +238,27 @@ spec:
     weightFairShare: 0.50
 ```
 
+### WrenUser (cluster-scoped, maps usernames to Unix UIDs)
+
+```yaml
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: miguel              # matches wren.giar.dev/user annotation
+spec:
+  uid: 1001                 # Unix UID for process execution
+  gid: 1001                 # Primary Unix GID
+  supplementalGroups:       # Additional GIDs (e.g., project groups)
+    - 1001
+    - 5000
+  homeDir: "/home/miguel"   # HOME env var, optional volume mount
+  defaultProject: "climate-sim"  # default fair-share project
+```
+
+Population: admin-managed or synced from LDAP via CronJob. The controller looks
+up the WrenUser when creating pods (securityContext) or dispatching to Reaper
+(uid/gid in job request). No LDAP connectivity needed from the controller.
+
 ## Development Milestones
 
 ### Phase 1: Foundation (v0.1.0) — COMPLETE
@@ -277,6 +299,8 @@ spec:
   - [x] Node utilization, job completion rate
   - [x] Gang scheduling success/failure ratio
 - [x] `wren-cli` basics: `submit`, `queue`, `cancel`, `status`, `logs`
+- [x] Sequential job IDs (Slurm-style, ConfigMap-backed counter)
+- [x] CLI integration tests (`--only-cli` flag, 6 tests)
 
 ### Phase 3: Reaper Integration (v0.3.0)
 **Goal:** Bare-metal execution backend via Reaper.
@@ -285,8 +309,11 @@ spec:
 - [ ] Implement communication protocol with Reaper agents on nodes
 - [ ] Job script distribution to Reaper agents
 - [ ] Process lifecycle management (launch, monitor, terminate)
-- [ ] MPI bootstrap for bare-metal mode (PMIx or native srun)
+- [ ] MPI bootstrap for bare-metal mode (PMIx or wren-launch)
 - [ ] Shared resource tracking between container and reaper backends
+- [ ] Reaper: accept `uid`/`gid`/`username`/`homeDir` in job request
+- [ ] Reaper: use `Command::uid()`/`.gid()` to drop privileges before exec
+- [ ] Reaper: inject `USER`/`HOME`/`LOGNAME` env vars (no NSS needed on node)
 - [ ] Integration test with Reaper
 
 ### Phase 4: Advanced Scheduling (v0.4.0) — MOSTLY COMPLETE
@@ -326,30 +353,129 @@ phase adds the plumbing to make it a proper multi-tenant HPC scheduler.
 
 #### 5.1 User Identity
 
-Kubernetes doesn't natively embed "who created this resource" on the object.
-The recommended approach is a **validating/mutating admission webhook** that
-stamps `wren.io/user` from the K8s API request's `UserInfo`:
+User identity in Wren serves two purposes:
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Annotation** (`wren.io/user`) | Simple, CLI sets it | Easy to forge |
-| **Namespace = tenant** | K8s RBAC enforces it | One namespace per user is rigid |
-| **ServiceAccount name** | Already in request context | Requires webhook to extract |
-| **Webhook + UserInfo** | Tamper-proof | Requires admission webhook |
+1. **Scheduling identity** — who submitted this job? (quotas, fair-share, limits)
+2. **Execution identity** — what UID/GID should the process run as? (filesystem permissions)
 
-**Chosen approach:** Webhook stamps `wren.io/user` from `UserInfo`, CLI sets it
-as a convenience annotation, webhook overrides if present. This mirrors how
-Slurm's `sbatch` knows who you are.
+Kubernetes only provides (1) natively via `UserInfo`. It has no concept of Unix
+UIDs. But HPC shared filesystems (Lustre, GPFS, NFS with AUTH_SYS) need real
+UIDs for correct file ownership.
 
-- [ ] Add `user` and `project` fields to `WrenJobSpec`:
-  ```yaml
-  spec:
-    user: "miguel"         # stamped by webhook, not user-settable
-    project: "climate-sim" # optional, for fair-share grouping
-    queue: "gpu"
-  ```
-- [ ] Implement mutating webhook to stamp `user` from `UserInfo`
-- [ ] CLI sends `wren.io/user` annotation; webhook overrides with real identity
+**Design: three layers**
+
+```
+               ┌─────────────────┐
+               │  kubectl / CLI  │
+               │  (user: miguel) │
+               └────────┬────────┘
+                        │ K8s API request
+               ┌────────▼────────┐
+  Layer 1:     │ Mutating Webhook │ ← stamps wren.giar.dev/user from UserInfo
+               └────────┬────────┘
+                        │
+               ┌────────▼────────┐
+               │ WrenJob CR      │
+               │ annotations:    │
+               │   wren.giar.dev/user  │
+               │ spec.project    │
+               └────────┬────────┘
+                        │
+        ┌───────────────▼───────────────┐
+        │       Wren Controller         │
+        │                               │
+  Layer 2:  lookup wren.giar.dev/user         │
+        │       │                       │
+        │  ┌────▼─────┐                 │
+        │  │ WrenUser  │  ← admin/sync  │
+        │  │   CRD     │    maintains   │
+        │  │ uid: 1001 │                │
+        │  │ gid: 1001 │                │
+        │  └────┬──────┘                │
+        │       │                       │
+  Layer 3:  ┌───▼─────┐  ┌──────────┐  │
+        │   │Container│  │ Reaper   │  │
+        │   │Backend  │  │ Backend  │  │
+        │   └────┬────┘  └────┬─────┘  │
+        └────────┼────────────┼────────┘
+                 │            │
+      runAsUser: 1001    setuid(1001)
+      runAsGroup: 1001   + USER/HOME env
+                 │            │
+            ┌────▼────┐  ┌───▼──────┐
+            │  Pod     │  │  Reaper  │
+            │ uid=1001 │  │ uid=1001 │
+            └─────────┘  └──────────┘
+```
+
+**Layer 1 — Identity Capture (Mutating Webhook):**
+Webhook stamps `wren.giar.dev/user` from the K8s API request's `UserInfo`. This is
+tamper-proof — the API server populates `UserInfo` from the auth backend (OIDC,
+x509, ServiceAccount). CLI sets `wren.giar.dev/user` as a convenience; webhook always
+overrides with the real identity.
+
+**Layer 2 — UID Resolution (WrenUser CRD):**
+A cluster-scoped `WrenUser` CRD maps usernames to Unix UID/GID. The controller
+looks up the WrenUser when creating pods or dispatching to Reaper. This avoids
+the controller needing direct LDAP connectivity.
+
+```yaml
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: miguel
+spec:
+  uid: 1001
+  gid: 1001
+  supplementalGroups: [1001, 5000]
+  homeDir: "/home/miguel"
+  defaultProject: "climate-sim"
+```
+
+Population options (pick what fits the site):
+- **Manual** — admin creates WrenUser CRDs (small teams)
+- **CronJob sync** — `ldapsearch | kubectl apply` (most HPC sites)
+- **LDAP controller** — watches LDAP changes, syncs WrenUser CRDs (large sites)
+- **Helm values** — define users in `values.yaml` for GitOps
+
+| | Controller → LDAP | WrenUser CRD |
+|---|---|---|
+| Runtime dependency | LDAP must be reachable | None (etcd) |
+| Failure mode | LDAP down = can't schedule | Always available |
+| Caching | Manual TTL cache | K8s informer, watch-based |
+| Configuration | Bind DN, TLS, schema | Just a CRD |
+| Auditability | LDAP query logs | `kubectl get wrenusers` |
+
+**Layer 3 — Execution Identity:**
+- **Container backend** — sets `securityContext.runAsUser`/`runAsGroup` on pods.
+  Files written to NFS/Lustre are owned by the correct UID. No NSS needed in
+  the container.
+- **Reaper backend** — receives numeric UID/GID from controller. Reaper agent
+  calls `CommandExt::uid()`/`.gid()` before exec. Sets `USER`, `HOME`,
+  `LOGNAME` env vars from WrenUser CRD. No LDAP/NSS/PAM needed on the compute
+  node — identity flows entirely from the controller.
+
+This makes compute nodes **stateless from an identity perspective**: no LDAP
+client, no SSSD, no nscd. The same identity plumbing works for both container
+and bare-metal backends. Nodes are dumb executors; all identity comes from Wren.
+
+**Reaper change required:** Add `uid`/`gid`/`username`/`home_dir` fields to the
+job request, use `Command::uid()`/`.gid()` before exec, inject env vars. Small,
+self-contained change — Reaper stays a dumb executor.
+
+##### Implementation checklist
+
+- [ ] Define `WrenUser` CRD in `wren-core/src/crd.rs` (cluster-scoped)
+- [ ] Add `project` field to `WrenJobSpec` (user-settable, for fair-share)
+- [ ] Implement mutating webhook to stamp `wren.giar.dev/user` from `UserInfo`
+- [ ] CLI sends `wren.giar.dev/user` annotation; webhook overrides with real identity
+- [ ] Controller: look up WrenUser on reconcile, resolve UID/GID
+- [ ] Container backend: set `securityContext.runAsUser`/`runAsGroup` on pods
+- [ ] Container backend: set `USER`/`HOME` env vars from WrenUser
+- [ ] Reaper backend: pass UID/GID/username/homeDir in job request
+- [ ] Reaper: accept UID/GID, use `Command::uid()`/`.gid()`, set env vars
+- [ ] Add LDAP sync script example (`scripts/sync-ldap-users.sh`)
+- [ ] CRD manifest and RBAC for WrenUser
 
 #### 5.2 Per-User Limits & Quotas
 
@@ -386,17 +512,51 @@ controller yet. This sub-phase wires it up:
 
 #### Architecture Flow
 
-The beauty of the current design is that **scheduling stays pure** (no K8s deps
-in `wren-scheduler`). Multi-user support flows cleanly:
+The scheduler crate stays **pure** (no K8s deps). Multi-user support flows
+cleanly through three paths:
 
+**Scheduling path** (identity → priority):
 ```
 Webhook stamps user → Reconciler reads user →
   FairShareManager adjusts priority →
     GangScheduler sees adjusted priority → placement
 ```
 
-The scheduler crate stays clean — it just sees priority numbers. The controller
-crate handles user identity plumbing.
+**Execution path** (identity → UID):
+```
+Reconciler reads user → WrenUser CRD lookup (uid, gid, homeDir) →
+  Container backend: securityContext.runAsUser/runAsGroup
+  Reaper backend: pass uid/gid in job request → setuid before exec
+```
+
+The scheduler crate sees only priority numbers. The controller crate handles
+user identity plumbing. Both backends receive the same UID/GID — files written
+to shared filesystems have correct ownership regardless of execution mode.
+
+#### Security: No Anonymous or Root Execution
+
+**Hard rule: every job must have a valid, non-root user identity.**
+
+The controller enforces this at scheduling time:
+- Job enters `Scheduling` → controller resolves `wren.giar.dev/user` annotation → looks up WrenUser CRD
+- If no annotation, no matching WrenUser, or WrenUser has `uid: 0` → job is **Failed** immediately
+- Jobs never run as root (uid=0) or as an anonymous/default user
+
+This means:
+- The mutating webhook stamps `wren.giar.dev/user` from K8s UserInfo (automatic for kubectl users)
+- An admin must create a `WrenUser` CRD for every user before they can submit jobs
+- The CLI should send `wren.giar.dev/user` as a convenience; the webhook always overrides with the real identity
+
+**Future: API Gateway for Job Submission**
+
+When adding a REST API gateway (Phase 7+), the gateway will:
+1. Authenticate users via OIDC/token (independent of K8s RBAC)
+2. Stamp `wren.giar.dev/user` on the WrenJob before creating it via the K8s API
+3. The controller's existing enforcement (require valid WrenUser, reject uid=0) provides defense-in-depth
+4. The gateway can add additional checks: rate limiting, quota pre-validation, project authorization
+
+The current architecture (annotation + WrenUser CRD lookup + controller enforcement) is designed to
+work unchanged behind an API gateway — the gateway just becomes another source of the annotation.
 
 ### Phase 6: Production Hardening (v0.6.0)
 **Goal:** Ready for production HPC workloads.
@@ -409,6 +569,17 @@ crate handles user identity plumbing.
 - [ ] Comprehensive documentation
 - [ ] Performance benchmarking (scheduling latency at scale)
 - [x] CI/CD pipeline (GitHub Actions: test, lint, build, container image)
+
+### Phase 7: API Gateway & REST Interface (future)
+**Goal:** REST API for job submission independent of kubectl/K8s RBAC.
+
+- [ ] API gateway service (axum-based, separate binary or mode)
+- [ ] OIDC/token authentication (map external identity to `wren.giar.dev/user`)
+- [ ] REST endpoints: `POST /jobs`, `GET /jobs`, `DELETE /jobs/{id}`, `GET /jobs/{id}/logs`
+- [ ] Rate limiting and quota pre-validation at the gateway level
+- [ ] Project authorization (which users can submit to which projects)
+- [ ] WebSocket endpoint for job status streaming
+- [ ] Gateway stamps `wren.giar.dev/user` annotation, controller enforces identity as today
 
 ## Coding Conventions
 

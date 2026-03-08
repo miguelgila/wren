@@ -52,12 +52,25 @@ async fn skip_if_no_cluster() -> bool {
     false
 }
 
+/// Annotations for test jobs — stamps the test user identity so the controller
+/// accepts the job (every job requires a valid `wren.giar.dev/user`).
+/// The corresponding WrenUser CRD is created by the integration test runner.
+fn test_annotations() -> std::collections::BTreeMap<String, String> {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        "wren.giar.dev/user".to_string(),
+        "wren-test-user".to_string(),
+    );
+    m
+}
+
 /// Build a minimal `WrenJob` object suitable for testing.
 fn build_wrenjob(name: &str, namespace: &str, nodes: u32) -> WrenJob {
     WrenJob {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
+            annotations: Some(test_annotations()),
             ..Default::default()
         },
         spec: WrenJobSpec {
@@ -80,6 +93,7 @@ fn build_wrenjob(name: &str, namespace: &str, nodes: u32) -> WrenJob {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     }
@@ -310,7 +324,7 @@ async fn test_wrenjob_default_values() {
     let raw: WrenJob = serde_json::from_value(json!({
         "apiVersion": "wren.giar.dev/v1alpha1",
         "kind": "WrenJob",
-        "metadata": { "name": name, "namespace": namespace },
+        "metadata": { "name": name, "namespace": namespace, "annotations": { "wren.giar.dev/user": "wren-test-user" } },
         "spec": { "nodes": 1 }
     }))
     .expect("deserialize minimal WrenJob");
@@ -440,7 +454,7 @@ async fn test_invalid_job_fails() {
     let raw: WrenJob = serde_json::from_value(json!({
         "apiVersion": "wren.giar.dev/v1alpha1",
         "kind": "WrenJob",
-        "metadata": { "name": name, "namespace": namespace },
+        "metadata": { "name": name, "namespace": namespace, "annotations": { "wren.giar.dev/user": "wren-test-user" } },
         "spec": { "nodes": 0 }
     }))
     .expect("deserialize");
@@ -575,6 +589,7 @@ fn build_wrenjob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
+            annotations: Some(test_annotations()),
             ..Default::default()
         },
         spec: WrenJobSpec {
@@ -597,6 +612,7 @@ fn build_wrenjob_with_walltime(name: &str, namespace: &str, nodes: u32, walltime
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     }
@@ -614,6 +630,7 @@ fn build_wrenjob_with_topology(
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
+            annotations: Some(test_annotations()),
             ..Default::default()
         },
         spec: WrenJobSpec {
@@ -640,6 +657,7 @@ fn build_wrenjob_with_topology(
                 topology_key: None,
             }),
             dependencies: vec![],
+            project: None,
         },
         status: None,
     }
@@ -784,6 +802,7 @@ async fn test_job_runs_to_completion() {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
+            annotations: Some(test_annotations()),
             ..Default::default()
         },
         spec: WrenJobSpec {
@@ -806,6 +825,7 @@ async fn test_job_runs_to_completion() {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     };
@@ -1834,6 +1854,7 @@ async fn test_container_backend_required_for_container_job() {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
+            annotations: Some(test_annotations()),
             ..Default::default()
         },
         spec: WrenJobSpec {
@@ -1848,6 +1869,7 @@ async fn test_container_backend_required_for_container_job() {
             mpi: None,
             topology: None,
             dependencies: vec![],
+            project: None,
         },
         status: None,
     };

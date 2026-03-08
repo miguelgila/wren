@@ -17,6 +17,10 @@ rules:
   - apiGroups: ["wren.giar.dev"]
     resources: ["wrenqueues"]
     verbs: ["get", "list", "watch"]
+  # WrenUser CRD access (user identity resolution)
+  - apiGroups: ["wren.giar.dev"]
+    resources: ["wrenusers"]
+    verbs: ["get", "list", "watch"]
   # Pod management for MPI workers/launcher
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
@@ -25,10 +29,10 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  # ConfigMap management for hostfiles
+  # ConfigMap management for hostfiles and job ID counter
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Secret management for SSH keys
   - apiGroups: [""]
     resources: ["secrets"]

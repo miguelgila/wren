@@ -1,0 +1,12 @@
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: miguel
+spec:
+  uid: 1001
+  gid: 1001
+  supplementalGroups:
+    - 1001
+    - 5000
+  homeDir: /home/miguel
+  defaultProject: climate-sim
