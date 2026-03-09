@@ -36,5 +36,7 @@ hostname = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+http = "1"
+bytes = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
