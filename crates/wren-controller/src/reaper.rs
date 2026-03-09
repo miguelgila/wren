@@ -13,52 +13,8 @@ use wren_core::{Placement, WrenError, WrenJobSpec};
 use crate::mpi;
 
 // ---------------------------------------------------------------------------
-// ReaperPod CRD types (mirrors reaper.io/v1alpha1, no crate dependency)
+// ReaperPod CRD status type (used to deserialize status from K8s API)
 // ---------------------------------------------------------------------------
-
-/// Environment variable for a ReaperPod.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReaperEnvVar {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<String>,
-}
-
-/// Volume mount for a ReaperPod.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReaperVolume {
-    name: String,
-    mount_path: String,
-    #[serde(default)]
-    read_only: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    config_map: Option<String>,
-}
-
-/// Spec for a ReaperPod CRD, matching reaper.io/v1alpha1.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReaperPodSpec {
-    command: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    args: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    env: Vec<ReaperEnvVar>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    working_dir: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    node_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_as_user: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_as_group: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    supplemental_groups: Option<Vec<i64>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    volumes: Vec<ReaperVolume>,
-}
 
 /// Status of a ReaperPod CRD, as set by the reaper-controller.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -77,82 +33,8 @@ struct ReaperPodStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Backward-compat types (kept for existing tests and serde roundtrip)
+// Backward-compat types (test-only, kept for serde roundtrip verification)
 // ---------------------------------------------------------------------------
-
-/// Request body sent to a Reaper agent when submitting a job (HTTP API).
-///
-/// DEPRECATED: This struct is retained for backward compatibility and tests.
-/// New code should use ReaperPod CRDs instead.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReaperJobRequest {
-    /// Shell script to execute on bare metal.
-    pub script: String,
-    /// Environment variables for the job process.
-    pub environment: HashMap<String, String>,
-    /// Working directory for the job process.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub working_dir: Option<String>,
-    /// Unix user ID for privilege dropping on the Reaper agent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uid: Option<u32>,
-    /// Unix primary group ID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gid: Option<u32>,
-    /// Username (for env var injection).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    /// Home directory path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub home_dir: Option<String>,
-    /// Supplemental Unix groups.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub supplemental_groups: Option<Vec<u32>>,
-    /// MPI hostfile content — Reaper agent writes this to `hostfile_path` before running the script.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hostfile: Option<String>,
-    /// Path where the hostfile should be written.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hostfile_path: Option<String>,
-}
-
-/// Response returned by a Reaper agent after submitting a job.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReaperJobResponse {
-    /// Opaque job identifier assigned by the Reaper agent.
-    pub job_id: String,
-    /// Initial status reported at submission time.
-    pub status: ReaperJobState,
-}
-
-/// Status of a job as reported by the Reaper agent's GET /api/v1/jobs/{id} endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReaperJobStatus {
-    pub job_id: String,
-    pub status: ReaperJobState,
-    /// Exit code, populated when the job has finished.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
-    /// Human-readable message (e.g. error description).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// Possible states a Reaper-managed job can be in.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ReaperJobState {
-    /// Job is queued / waiting to start.
-    Pending,
-    /// Job process is actively running.
-    Running,
-    /// Job completed successfully (exit code 0).
-    Succeeded,
-    /// Job exited with a non-zero exit code or was killed.
-    Failed,
-    /// Status could not be determined.
-    Unknown,
-}
 
 // ---------------------------------------------------------------------------
 // ReaperBackend — creates ReaperPod CRDs via the Kubernetes API
@@ -413,50 +295,6 @@ impl ReaperBackend {
         }
     }
 
-    /// Build the backward-compatible ReaperJobRequest (for tests).
-    /// DEPRECATED: Use build_reaper_pod() for new code.
-    pub fn build_job_request(
-        &self,
-        job_name: &str,
-        spec: &WrenJobSpec,
-        placement: &Placement,
-        rank: u32,
-        user: Option<&UserIdentity>,
-    ) -> Result<ReaperJobRequest, WrenError> {
-        let reaper_spec = spec
-            .reaper
-            .as_ref()
-            .ok_or_else(|| WrenError::ValidationError {
-                reason: "reaper spec required for reaper backend".to_string(),
-            })?;
-
-        let environment = self.build_rank_env(job_name, spec, placement, rank, user)?;
-        let hostfile_content = mpi::generate_hostfile(placement, spec.tasks_per_node);
-        let hostfile_path = format!("/tmp/wren-hostfile-{}", job_name);
-
-        Ok(ReaperJobRequest {
-            script: reaper_spec.script.clone(),
-            environment,
-            working_dir: reaper_spec.working_dir.clone(),
-            uid: user.map(|u| u.uid),
-            gid: user.map(|u| u.gid),
-            username: user.map(|u| u.username.clone()),
-            home_dir: user.and_then(|u| u.home_dir.clone()),
-            supplemental_groups: user
-                .map(|u| u.supplemental_groups.clone())
-                .filter(|g| !g.is_empty()),
-            hostfile: if spec.mpi.is_some() {
-                Some(hostfile_content)
-            } else {
-                None
-            },
-            hostfile_path: if spec.mpi.is_some() {
-                Some(hostfile_path)
-            } else {
-                None
-            },
-        })
-    }
 }
 
 #[async_trait]
@@ -609,26 +447,120 @@ fn map_phase_to_status(status: &ReaperPodStatus) -> BackendJobStatus {
     }
 }
 
-/// Map a [`ReaperJobStatus`] to the generic [`BackendJobStatus`].
-/// DEPRECATED: Kept for backward compatibility with HTTP API types.
-fn map_reaper_state(status: &ReaperJobStatus) -> BackendJobStatus {
-    match status.status {
-        ReaperJobState::Pending => BackendJobStatus::Launching { ready: 0, total: 1 },
-        ReaperJobState::Running => BackendJobStatus::Running,
-        ReaperJobState::Succeeded => BackendJobStatus::Succeeded,
-        ReaperJobState::Failed => BackendJobStatus::Failed {
-            message: status.message.clone().unwrap_or_else(|| {
-                format!("job exited with code {}", status.exit_code.unwrap_or(-1))
-            }),
-        },
-        ReaperJobState::Unknown => BackendJobStatus::NotFound,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use wren_core::{ExecutionBackendType, WrenJobSpec};
+
+    // -------------------------------------------------------------------------
+    // Backward-compat HTTP API types (test-only, kept for serde verification)
+    // -------------------------------------------------------------------------
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    struct ReaperJobRequest {
+        script: String,
+        environment: HashMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uid: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gid: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        home_dir: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        supplemental_groups: Option<Vec<u32>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hostfile: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hostfile_path: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    struct ReaperJobResponse {
+        job_id: String,
+        status: ReaperJobState,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    struct ReaperJobStatusCompat {
+        job_id: String,
+        status: ReaperJobState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "lowercase")]
+    enum ReaperJobState {
+        Pending,
+        Running,
+        Succeeded,
+        Failed,
+        Unknown,
+    }
+
+    fn map_reaper_state(status: &ReaperJobStatusCompat) -> BackendJobStatus {
+        match status.status {
+            ReaperJobState::Pending => BackendJobStatus::Launching { ready: 0, total: 1 },
+            ReaperJobState::Running => BackendJobStatus::Running,
+            ReaperJobState::Succeeded => BackendJobStatus::Succeeded,
+            ReaperJobState::Failed => BackendJobStatus::Failed {
+                message: status.message.clone().unwrap_or_else(|| {
+                    format!("job exited with code {}", status.exit_code.unwrap_or(-1))
+                }),
+            },
+            ReaperJobState::Unknown => BackendJobStatus::NotFound,
+        }
+    }
+
+    /// Build a backward-compatible ReaperJobRequest from the same env builder.
+    fn build_job_request(
+        backend: &ReaperBackend,
+        job_name: &str,
+        spec: &WrenJobSpec,
+        placement: &Placement,
+        rank: u32,
+        user: Option<&UserIdentity>,
+    ) -> Result<ReaperJobRequest, WrenError> {
+        let reaper_spec = spec
+            .reaper
+            .as_ref()
+            .ok_or_else(|| WrenError::ValidationError {
+                reason: "reaper spec required for reaper backend".to_string(),
+            })?;
+
+        let environment = backend.build_rank_env(job_name, spec, placement, rank, user)?;
+        let hostfile_content = mpi::generate_hostfile(placement, spec.tasks_per_node);
+        let hostfile_path = format!("/tmp/wren-hostfile-{}", job_name);
+
+        Ok(ReaperJobRequest {
+            script: reaper_spec.script.clone(),
+            environment,
+            working_dir: reaper_spec.working_dir.clone(),
+            uid: user.map(|u| u.uid),
+            gid: user.map(|u| u.gid),
+            username: user.map(|u| u.username.clone()),
+            home_dir: user.and_then(|u| u.home_dir.clone()),
+            supplemental_groups: user
+                .map(|u| u.supplemental_groups.clone())
+                .filter(|g| !g.is_empty()),
+            hostfile: if spec.mpi.is_some() {
+                Some(hostfile_content)
+            } else {
+                None
+            },
+            hostfile_path: if spec.mpi.is_some() {
+                Some(hostfile_path)
+            } else {
+                None
+            },
+        })
+    }
 
     // -------------------------------------------------------------------------
     // Helpers
@@ -805,7 +737,7 @@ mod tests {
             "exit_code": 1,
             "message": "OOM"
         }"#;
-        let status: ReaperJobStatus = serde_json::from_str(json).expect("deserialize");
+        let status: ReaperJobStatusCompat = serde_json::from_str(json).expect("deserialize");
         assert_eq!(status.job_id, "xyz");
         assert_eq!(status.status, ReaperJobState::Failed);
         assert_eq!(status.exit_code, Some(1));
@@ -818,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_map_pending_to_launching() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Pending,
             exit_code: None,
@@ -832,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_map_running() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Running,
             exit_code: None,
@@ -843,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_map_succeeded() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Succeeded,
             exit_code: Some(0),
@@ -854,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_map_failed_with_message() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Failed,
             exit_code: Some(2),
@@ -870,7 +802,7 @@ mod tests {
 
     #[test]
     fn test_map_failed_without_message_uses_exit_code() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Failed,
             exit_code: Some(137),
@@ -889,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_map_failed_without_message_or_exit_code() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Failed,
             exit_code: None,
@@ -905,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_map_unknown_to_not_found() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Unknown,
             exit_code: None,
@@ -984,8 +916,7 @@ mod tests {
         let spec = make_reaper_spec(4, 2);
         let placement = make_placement(&["n0", "n1", "n2", "n3"]);
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
 
         assert_eq!(req.environment["WREN_MPI_RANK"], "0");
@@ -1001,11 +932,9 @@ mod tests {
         let spec = make_reaper_spec(2, 4);
         let placement = make_placement(&["n0", "n1"]);
 
-        let req0 = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req0 = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
-        let req1 = backend
-            .build_job_request("test-job", &spec, &placement, 1, None)
+        let req1 = build_job_request(&backend, "test-job", &spec, &placement, 1, None)
             .unwrap();
 
         assert_eq!(req0.environment["WREN_MPI_RANK"], "0");
@@ -1022,8 +951,7 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         assert_eq!(req.working_dir, Some("/scratch/project".to_string()));
     }
@@ -1046,7 +974,7 @@ mod tests {
             project: None,
         };
         let placement = make_placement(&["n0"]);
-        let result = backend.build_job_request("test-job", &spec, &placement, 0, None);
+        let result = build_job_request(&backend, "test-job", &spec, &placement, 0, None);
         assert!(result.is_err());
         match result.unwrap_err() {
             WrenError::ValidationError { reason } => {
@@ -1062,8 +990,7 @@ mod tests {
         let spec = make_reaper_spec(3, 4);
         let placement = make_placement(&["node-0", "node-1", "node-2"]);
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         let hostfile = &req.environment["WREN_HOSTFILE_CONTENT"];
         assert_eq!(hostfile, "node-0 slots=4\nnode-1 slots=4\nnode-2 slots=4");
@@ -1082,8 +1009,7 @@ mod tests {
         });
         let placement = make_placement(&["node-0", "node-1"]);
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         assert_eq!(req.environment["MPICH_OFI_IFNAME"], "hsn0");
         assert_eq!(req.environment["MPICH_OFI_STARTUP_CONNECT"], "1");
@@ -1100,8 +1026,7 @@ mod tests {
             fabric_interface: None,
         });
         let placement = make_placement(&["n0", "n1"]);
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         assert!(!req.environment.contains_key("UCX_NET_DEVICES"));
         assert!(req.environment.contains_key("WREN_MPI_LAUNCHER"));
@@ -1112,8 +1037,7 @@ mod tests {
         let backend = make_backend();
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         assert_eq!(req.script, "#!/bin/bash\nmpirun ./app");
     }
@@ -1123,8 +1047,7 @@ mod tests {
         let backend = make_backend();
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["solo-node"]);
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "1");
         assert_eq!(req.environment["WREN_NUM_NODES"], "1");
@@ -1143,8 +1066,7 @@ mod tests {
             nodes: (0..8).map(|i| format!("node-{i}")).collect(),
             score: 1.0,
         };
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 7, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 7, None)
             .unwrap();
         assert_eq!(req.environment["WREN_TOTAL_RANKS"], "32");
         assert_eq!(req.environment["WREN_MPI_RANK"], "7");
@@ -1153,7 +1075,7 @@ mod tests {
 
     #[test]
     fn test_map_reaper_state_failed_exit_code_zero_with_failed_status() {
-        let status = ReaperJobStatus {
+        let status = ReaperJobStatusCompat {
             job_id: "j1".to_string(),
             status: ReaperJobState::Failed,
             exit_code: Some(0),
@@ -1171,7 +1093,7 @@ mod tests {
     #[test]
     fn test_reaper_job_status_minimal_json() {
         let json = r#"{"job_id": "abc", "status": "pending"}"#;
-        let status: ReaperJobStatus = serde_json::from_str(json).unwrap();
+        let status: ReaperJobStatusCompat = serde_json::from_str(json).unwrap();
         assert_eq!(status.job_id, "abc");
         assert_eq!(status.status, ReaperJobState::Pending);
         assert!(status.exit_code.is_none());
@@ -1181,7 +1103,7 @@ mod tests {
     #[test]
     fn test_reaper_job_status_succeeded_with_exit_code_zero() {
         let json = r#"{"job_id": "xyz", "status": "succeeded", "exit_code": 0}"#;
-        let status: ReaperJobStatus = serde_json::from_str(json).unwrap();
+        let status: ReaperJobStatusCompat = serde_json::from_str(json).unwrap();
         assert_eq!(status.status, ReaperJobState::Succeeded);
         assert_eq!(status.exit_code, Some(0));
     }
@@ -1208,8 +1130,7 @@ mod tests {
         let placement = make_placement(&["n0", "n1"]);
         let user = make_user_identity();
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, Some(&user))
             .unwrap();
 
         assert_eq!(req.uid, Some(1001));
@@ -1229,8 +1150,7 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
 
         assert!(req.uid.is_none());
@@ -1257,8 +1177,7 @@ mod tests {
             default_project: None,
         };
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, Some(&user))
             .unwrap();
 
         assert_eq!(req.uid, Some(2000));
@@ -1276,8 +1195,7 @@ mod tests {
         let placement = make_placement(&["n0"]);
         let user = make_user_identity();
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, Some(&user))
             .unwrap();
         let json = serde_json::to_string(&req).expect("serialize");
         let parsed: ReaperJobRequest = serde_json::from_str(&json).expect("deserialize");
@@ -1295,8 +1213,7 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, None)
             .unwrap();
         let json = serde_json::to_string(&req).expect("serialize");
 
@@ -1328,8 +1245,7 @@ mod tests {
         let placement = make_placement(&["n0"]);
         let user = make_user_identity();
 
-        let req = backend
-            .build_job_request("test-job", &spec, &placement, 0, Some(&user))
+        let req = build_job_request(&backend, "test-job", &spec, &placement, 0, Some(&user))
             .unwrap();
 
         assert_eq!(req.environment["USER"], "testuser");
@@ -1345,8 +1261,7 @@ mod tests {
         let spec = make_reaper_spec(4, 1);
         let placement = make_placement(&["node-0", "node-1", "node-2", "node-3"]);
 
-        let req = backend
-            .build_job_request("train-job", &spec, &placement, 2, None)
+        let req = build_job_request(&backend, "train-job", &spec, &placement, 2, None)
             .unwrap();
 
         assert_eq!(req.environment["MASTER_ADDR"], "node-0");
@@ -1368,8 +1283,7 @@ mod tests {
         });
         let placement = make_placement(&["node-0", "node-1"]);
 
-        let req = backend
-            .build_job_request("mpi-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "mpi-job", &spec, &placement, 0, None)
             .unwrap();
 
         assert_eq!(req.environment["MPICH_OFI_STARTUP_CONNECT"], "1");
@@ -1390,8 +1304,7 @@ mod tests {
         });
         let placement = make_placement(&["n0", "n1"]);
 
-        let req = backend
-            .build_job_request("hf-job", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "hf-job", &spec, &placement, 0, None)
             .unwrap();
 
         assert!(req.hostfile.is_some());
@@ -1408,8 +1321,7 @@ mod tests {
         let spec = make_reaper_spec(1, 1);
         let placement = make_placement(&["n0"]);
 
-        let req = backend
-            .build_job_request("no-mpi", &spec, &placement, 0, None)
+        let req = build_job_request(&backend, "no-mpi", &spec, &placement, 0, None)
             .unwrap();
 
         assert!(req.hostfile.is_none());
@@ -1425,11 +1337,9 @@ mod tests {
         let spec = make_reaper_spec(3, 1);
         let placement = make_placement(&["alpha", "beta", "gamma"]);
 
-        let req0 = backend
-            .build_job_request("j", &spec, &placement, 0, None)
+        let req0 = build_job_request(&backend, "j", &spec, &placement, 0, None)
             .unwrap();
-        let req2 = backend
-            .build_job_request("j", &spec, &placement, 2, None)
+        let req2 = build_job_request(&backend, "j", &spec, &placement, 2, None)
             .unwrap();
 
         assert_eq!(req0.environment["MASTER_ADDR"], "alpha");

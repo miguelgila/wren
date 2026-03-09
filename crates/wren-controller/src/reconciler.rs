@@ -5,7 +5,8 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use wren_core::backend::{BackendJobStatus, ExecutionBackend};
 use wren_core::{
-    ClusterState, JobState, UserIdentity, WalltimeDuration, WrenError, WrenJob, WrenJobStatus,
+    ClusterState, ExecutionBackendType, JobState, UserIdentity, WalltimeDuration, WrenError,
+    WrenJob, WrenJobStatus,
 };
 use wren_scheduler::gang::GangScheduler;
 
@@ -17,10 +18,21 @@ use crate::reservation::ReservationManager;
 pub struct ReconcilerContext {
     pub client: Client,
     pub cluster_state: Arc<RwLock<ClusterState>>,
-    pub backend: Arc<dyn ExecutionBackend>,
+    pub container_backend: Arc<dyn ExecutionBackend>,
+    pub reaper_backend: Arc<dyn ExecutionBackend>,
     pub metrics: Metrics,
     pub reservations: RwLock<ReservationManager>,
     pub job_id_allocator: JobIdAllocator,
+}
+
+impl ReconcilerContext {
+    /// Select the appropriate backend based on the job's backend type.
+    pub fn backend_for(&self, backend_type: &ExecutionBackendType) -> &Arc<dyn ExecutionBackend> {
+        match backend_type {
+            ExecutionBackendType::Container => &self.container_backend,
+            ExecutionBackendType::Reaper => &self.reaper_backend,
+        }
+    }
 }
 
 /// Reconcile a single WrenJob. Called by the controller whenever the resource changes.
@@ -50,16 +62,20 @@ pub async fn reconcile(job: &WrenJob, ctx: &ReconcilerContext) -> Result<(), Wre
         "reconciling WrenJob"
     );
 
+    let backend = ctx.backend_for(&spec.backend);
+
     match status.state {
         JobState::Pending => handle_pending(name, namespace, spec, ctx).await,
-        JobState::Scheduling => handle_scheduling(name, namespace, spec, user.as_ref(), ctx).await,
-        JobState::Running => handle_running(name, namespace, spec, &status, ctx).await,
+        JobState::Scheduling => {
+            handle_scheduling(name, namespace, spec, user.as_ref(), backend, ctx).await
+        }
+        JobState::Running => handle_running(name, namespace, spec, &status, backend, ctx).await,
         JobState::Succeeded
         | JobState::Failed
         | JobState::Cancelled
         | JobState::WalltimeExceeded => {
             // Terminal states — clean up resources, preserve pods for log TTL
-            handle_terminal(name, namespace, &status, ctx).await
+            handle_terminal(name, namespace, &status, backend, ctx).await
         }
     }
 }
@@ -106,6 +122,7 @@ async fn handle_scheduling(
     namespace: &str,
     spec: &wren_core::WrenJobSpec,
     user: Option<&UserIdentity>,
+    backend: &Arc<dyn ExecutionBackend>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
     // Security: every job must have a resolved user identity.
@@ -170,8 +187,7 @@ async fn handle_scheduling(
             }
 
             // Launch via backend
-            match ctx
-                .backend
+            match backend
                 .launch(name, namespace, spec, &placement, user)
                 .await
             {
@@ -286,10 +302,11 @@ async fn handle_running(
     namespace: &str,
     spec: &wren_core::WrenJobSpec,
     job_status: &WrenJobStatus,
+    backend: &Arc<dyn ExecutionBackend>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
     // Check backend status
-    let backend_status = ctx.backend.status(name, namespace).await?;
+    let backend_status = backend.status(name, namespace).await?;
 
     match backend_status {
         BackendJobStatus::Succeeded => {
@@ -325,7 +342,7 @@ async fn handle_running(
                 check_walltime_exceeded(spec.walltime.as_deref(), job_status.start_time.as_deref())
             {
                 warn!(job = name, "walltime exceeded, terminating");
-                ctx.backend.terminate(name, namespace).await?;
+                backend.terminate(name, namespace).await?;
                 update_status(name, namespace, JobState::WalltimeExceeded, Some(&msg), ctx).await?;
                 ctx.metrics
                     .record_job_state_change(&spec.queue, "Running", "WalltimeExceeded");
@@ -428,11 +445,12 @@ async fn handle_terminal(
     name: &str,
     namespace: &str,
     status: &WrenJobStatus,
+    backend: &Arc<dyn ExecutionBackend>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
     // Ensure backend resources (services, configmaps) are cleaned up.
     // Pods are intentionally kept for log retrieval.
-    if let Err(e) = ctx.backend.cleanup(name, namespace).await {
+    if let Err(e) = backend.cleanup(name, namespace).await {
         warn!(job = name, error = %e, "failed to clean up backend resources");
     }
 
@@ -455,7 +473,7 @@ async fn handle_terminal(
     // Check if pods should be cleaned up based on TTL.
     if should_cleanup_pods(status) {
         info!(job = name, "pod TTL expired, cleaning up pods");
-        if let Err(e) = ctx.backend.terminate(name, namespace).await {
+        if let Err(e) = backend.terminate(name, namespace).await {
             warn!(job = name, error = %e, "failed to delete expired pods");
         }
     }

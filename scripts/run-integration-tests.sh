@@ -451,6 +451,19 @@ install_crds() {
         crd/wrenqueues.wren.giar.dev \
         --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
 
+    # Install ReaperPod CRD from sibling reaper project (needed for reaper backend tests)
+    local reaper_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.io.yaml"
+    if [[ -f "$reaper_crd" ]]; then
+        log "Applying ReaperPod CRD from reaper project"
+        kubectl apply -f "$reaper_crd"
+        kubectl wait --for=condition=Established \
+            crd/reaperpods.reaper.io \
+            --timeout=30s 2>/dev/null || warn "ReaperPod CRD not established"
+        crd_count=$(( crd_count + 1 ))
+    else
+        warn "ReaperPod CRD not found at ${reaper_crd} — reaper backend tests may fail"
+    fi
+
     success "CRDs installed (${crd_count} files)"
 }
 

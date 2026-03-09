@@ -15,7 +15,6 @@ mod metrics;
 #[allow(dead_code)]
 mod mpi;
 mod node_watcher;
-#[allow(dead_code)]
 mod reaper;
 mod reconciler;
 #[allow(dead_code)]
@@ -28,6 +27,7 @@ use container::ContainerBackend;
 use job_id::JobIdAllocator;
 use metrics::Metrics;
 use node_watcher::NodeWatcher;
+use reaper::ReaperBackend;
 use reconciler::ReconcilerContext;
 
 #[tokio::main]
@@ -94,8 +94,9 @@ async fn main() -> anyhow::Result<()> {
         error!(error = %e, "failed initial node sync");
     }
 
-    // Set up the execution backend
-    let backend = Arc::new(ContainerBackend::new(client.clone()));
+    // Set up execution backends
+    let container_backend = Arc::new(ContainerBackend::new(client.clone()));
+    let reaper_backend = Arc::new(ReaperBackend::new(client.clone()));
 
     // Job ID allocator — counter persisted in a ConfigMap
     let controller_namespace =
@@ -106,7 +107,8 @@ async fn main() -> anyhow::Result<()> {
     let ctx = Arc::new(ReconcilerContext {
         client: client.clone(),
         cluster_state: cluster_state.clone(),
-        backend,
+        container_backend,
+        reaper_backend,
         metrics: metrics.clone(),
         reservations: RwLock::new(reservation::ReservationManager::default()),
         job_id_allocator,
