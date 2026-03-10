@@ -61,9 +61,12 @@ with Docker and Kind.
 ./examples/08-distributed-training/setup.sh --cleanup
 ```
 
+Prerequisites: Docker, [kind](https://kind.sigs.k8s.io/),
+kubectl, [helm](https://helm.sh/), and the Reaper repo cloned alongside wren.
+
 The setup script:
-1. Creates a Kind cluster with 2 worker nodes
-2. Installs Reaper runtime + ReaperPod CRD and controller
+1. Creates a Kind cluster with 2 worker nodes + containerd `reaper-v2` handler
+2. Installs Reaper via Helm (runtime, CRDs, controller, RuntimeClass)
 3. Installs Python3 + PyTorch (CPU-only, ~150 MB) on each node
 4. Creates a ConfigMap with the training script
 5. Creates 2 ReaperPod CRDs — one per node, with distributed training env vars

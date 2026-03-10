@@ -14,11 +14,12 @@
 #   - Docker running
 #   - kind (https://kind.sigs.k8s.io/)
 #   - kubectl
+#   - helm (https://helm.sh/)
 #   - Reaper repo cloned alongside wren (../reaper)
 set -euo pipefail
 
 CLUSTER_NAME="wren-distributed-training"
-KUBECONFIG_PATH="/tmp/wren-${CLUSTER_NAME}-kubeconfig"
+KUBECONFIG_PATH="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
 LOG_FILE="/tmp/wren-${CLUSTER_NAME}-setup.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WREN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -53,7 +54,7 @@ fi
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
-for cmd in docker kind kubectl; do
+for cmd in docker kind kubectl helm; do
   command -v "$cmd" >/dev/null || fail "Required tool '$cmd' not found"
 done
 
@@ -62,63 +63,26 @@ if [[ ! -d "$REAPER_ROOT/scripts" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Create Kind cluster (1 control-plane + 2 workers)
+# Install Reaper (cluster + runtime + CRDs + controller via Helm)
 # ---------------------------------------------------------------------------
-KIND_CONFIG=$(mktemp)
-cat > "$KIND_CONFIG" <<'EOF'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-  - role: worker
-  - role: worker
-EOF
-
-if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
-  info "Cluster '${CLUSTER_NAME}' already exists, reusing."
-else
-  info "Creating Kind cluster '${CLUSTER_NAME}' (1 control-plane + 2 workers)..."
-  kind create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" >> "$LOG_FILE" 2>&1
-  ok "Cluster created."
-fi
-rm -f "$KIND_CONFIG"
-
-kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_PATH"
-export KUBECONFIG="$KUBECONFIG_PATH"
-
-# ---------------------------------------------------------------------------
-# Install Reaper runtime + ReaperPod controller
-# ---------------------------------------------------------------------------
-info "Installing Reaper runtime on all nodes..."
+# setup-playground.sh handles everything:
+#   1. Creates Kind cluster with containerdConfigPatches (reaper-v2 handler)
+#   2. Builds and loads reaper-node + reaper-controller images
+#   3. Installs Reaper via Helm (CRDs, RuntimeClass, DaemonSet, controller)
+#   4. Verifies RuntimeClass reaper-v2 is available
+#   5. Runs a smoke test
+# Default config: 1 control-plane + 2 workers — exactly what we need.
+info "Setting up Reaper-enabled Kind cluster '${CLUSTER_NAME}'..."
+info "(This may take a few minutes on first run)"
 cd "$REAPER_ROOT"
 ./scripts/setup-playground.sh --cluster-name "$CLUSTER_NAME" --skip-build >> "$LOG_FILE" 2>&1 || \
   ./scripts/setup-playground.sh --cluster-name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
-ok "Reaper runtime installed."
-
-info "Installing ReaperPod CRD and controller..."
-kubectl apply -f "$REAPER_ROOT/deploy/kubernetes/crds/reaperpods.reaper.io.yaml" >> "$LOG_FILE" 2>&1
-
-# Build and load controller image if not already present
-if ! docker image inspect ghcr.io/miguelgila/reaper-controller:latest > /dev/null 2>&1; then
-  ./scripts/build-controller-image.sh --cluster-name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
-else
-  kind load docker-image ghcr.io/miguelgila/reaper-controller:latest --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
-fi
-kubectl apply -f "$REAPER_ROOT/deploy/kubernetes/reaper-controller.yaml" >> "$LOG_FILE" 2>&1
-kubectl rollout status deployment/reaper-controller -n reaper-system --timeout=120s >> "$LOG_FILE" 2>&1
-ok "ReaperPod controller running."
+ok "Reaper cluster ready (runtime + CRDs + controller installed via Helm)."
 cd "$WREN_ROOT"
 
-# ---------------------------------------------------------------------------
-# Verify RuntimeClass
-# ---------------------------------------------------------------------------
-info "Verifying RuntimeClass reaper-v2..."
-for i in $(seq 1 15); do
-  kubectl get runtimeclass reaper-v2 &>/dev/null && break
-  sleep 1
-done
-kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 not found"
-ok "RuntimeClass ready."
+# Pick up KUBECONFIG from the cluster setup-playground.sh created
+kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_PATH"
+export KUBECONFIG="$KUBECONFIG_PATH"
 
 # ---------------------------------------------------------------------------
 # Install Python3 + PyTorch (CPU-only) on worker nodes
@@ -283,14 +247,13 @@ echo ""
 printf "${C_BOLD}=== Demo Complete ===${C_RESET}\n"
 echo ""
 echo "What happened:"
-echo "  1. Kind cluster with 2 worker nodes"
-echo "  2. Reaper runtime installed (runtimeClassName: reaper-v2)"
-echo "  3. ReaperPod CRD + controller installed"
-echo "  4. Python3 + PyTorch (CPU) installed on each node"
-echo "  5. Training script delivered as ConfigMap volume"
-echo "  6. 2 ReaperPod CRDs created — controller made real Pods"
-echo "  7. Reaper ran them directly on bare metal"
-echo "  8. PyTorch Gloo backend synced gradients across nodes"
+echo "  1. Kind cluster with 2 worker nodes + containerd reaper-v2 handler"
+echo "  2. Reaper installed via Helm (runtime, CRDs, controller, RuntimeClass)"
+echo "  3. Python3 + PyTorch (CPU) installed on each node"
+echo "  4. Training script delivered as ConfigMap volume"
+echo "  5. 2 ReaperPod CRDs created — controller made real Pods"
+echo "  6. Reaper ran them directly on bare metal"
+echo "  7. PyTorch Gloo backend synced gradients across nodes"
 echo ""
 echo "No custom HTTP API — just ReaperPod CRDs + ConfigMaps."
 echo ""
