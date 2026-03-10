@@ -96,14 +96,14 @@ pub fn validate_wrenjob(spec: &WrenJobSpec) -> Result<(), Vec<String>> {
         }
     }
 
-    // Rule 5: reaper backend requires a reaper spec with non-empty script
+    // Rule 5: reaper backend requires a reaper spec with command or script
     if spec.backend == ExecutionBackendType::Reaper {
         match &spec.reaper {
             None => {
                 errors.push("backend 'reaper' requires a reaper spec to be provided".to_string())
             }
-            Some(r) if r.script.trim().is_empty() => {
-                errors.push("reaper.script must not be empty".to_string())
+            Some(r) if r.command.is_empty() && r.script.as_deref().is_none_or(|s| s.trim().is_empty()) => {
+                errors.push("reaper spec requires either 'command' or 'script'".to_string())
             }
             _ => {}
         }
@@ -434,14 +434,27 @@ mod tests {
     }
 
     #[test]
-    fn test_wrenjob_reaper_backend_valid() {
+    fn test_wrenjob_reaper_backend_valid_script() {
         let spec = WrenJobSpec {
             backend: ExecutionBackendType::Reaper,
             container: None,
             reaper: Some(ReaperSpec {
-                script: "#!/bin/bash\nsrun ./app".to_string(),
-                environment: Default::default(),
-                working_dir: None,
+                script: Some("#!/bin/bash\nsrun ./app".to_string()),
+                ..Default::default()
+            }),
+            ..valid_wrenjob_spec()
+        };
+        assert!(validate_wrenjob(&spec).is_ok());
+    }
+
+    #[test]
+    fn test_wrenjob_reaper_backend_valid_command() {
+        let spec = WrenJobSpec {
+            backend: ExecutionBackendType::Reaper,
+            container: None,
+            reaper: Some(ReaperSpec {
+                command: vec!["python3".to_string(), "/opt/train.py".to_string()],
+                ..Default::default()
             }),
             ..valid_wrenjob_spec()
         };
@@ -461,19 +474,18 @@ mod tests {
     }
 
     #[test]
-    fn test_wrenjob_reaper_backend_empty_script() {
+    fn test_wrenjob_reaper_backend_empty_command_and_script() {
         let spec = WrenJobSpec {
             backend: ExecutionBackendType::Reaper,
             container: None,
             reaper: Some(ReaperSpec {
-                script: "   ".to_string(),
-                environment: Default::default(),
-                working_dir: None,
+                script: Some("   ".to_string()),
+                ..Default::default()
             }),
             ..valid_wrenjob_spec()
         };
         let errs = validate_wrenjob(&spec).unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("reaper.script")));
+        assert!(errs.iter().any(|e| e.contains("command") || e.contains("script")));
     }
 
     #[test]

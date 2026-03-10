@@ -91,26 +91,26 @@ kubectl apply -f user.yaml
 wren submit job.yaml
 ```
 
-The controller handles gang scheduling, env var injection, and ReaperPod creation.
+The controller handles gang scheduling, env var injection (MASTER_ADDR, RANK,
+WORLD_SIZE, etc.), volume mounting, and ReaperPod creation.
 
 ## Design Notes
 
-### Why ReaperPod CRD instead of the HTTP Agent API?
+### Why ReaperPod CRD?
 
 The ReaperPod CRD gives you the full Kubernetes feature set for free:
 
-| Feature | ReaperPod CRD | HTTP Agent API |
-|---------|---------------|----------------|
+| Feature | ReaperPod CRD | Direct process launch |
+|---------|---------------|----------------------|
 | ConfigMap volumes | native | not available |
 | Secret volumes | native | not available |
-| kubectl logs | native | custom polling |
+| kubectl logs | native | not available |
 | kubectl exec | native | not available |
-| Pod lifecycle | kubelet manages | custom polling |
-| User identity | securityContext | custom JSON fields |
+| Pod lifecycle | kubelet manages | manual tracking |
+| User identity | securityContext | manual uid/gid |
 | Node scheduling | nodeSelector | manual routing |
 
-The HTTP agent API (`backend: reaper`) is being deprecated in favor of
-creating ReaperPod CRDs. See the project TODOs.
+The Wren reaper backend creates ReaperPod CRDs directly via the Kubernetes API.
 
 ### Why Gloo?
 
