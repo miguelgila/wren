@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [shell, user, cli]
+        suite: [shell, user, cli, examples]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -88,7 +88,10 @@ jobs:
         with:
           timeout_minutes: 10
           max_attempts: 2
-          command: SKIP_BUILD=1 TESTS=${{ matrix.suite }} ./scripts/run-integration-tests.sh
+          command: >-
+            ${{ matrix.suite == 'examples'
+              && './scripts/test-examples.sh --skip-cluster'
+              || format('SKIP_BUILD=1 TESTS={0} ./scripts/run-integration-tests.sh', matrix.suite) }}
       - name: Upload integration logs
         if: always()
         uses: actions/upload-artifact@v4
