@@ -306,25 +306,23 @@ up the WrenUser when creating pods (securityContext) or dispatching to Reaper
 **Goal:** Bare-metal execution backend via Reaper.
 
 #### Phase 3a: Core Integration — COMPLETE
-- [x] Define Reaper backend trait implementation (`ReaperBackend` with HTTP client)
-- [x] Implement communication protocol with Reaper agents on nodes (REST API: POST/GET/DELETE /api/v1/jobs)
-- [x] Job script distribution to Reaper agents
-- [x] Process lifecycle management (launch, monitor, terminate via HTTP)
-- [x] Reaper: accept `uid`/`gid`/`username`/`homeDir` in job request
-- [x] Reaper: use `Command::uid()`/`.gid()` to drop privileges before exec (setgroups → setgid → setuid)
-- [x] Reaper: inject `USER`/`HOME`/`LOGNAME` env vars (same as container backend)
+- [x] Define Reaper backend trait implementation (`ReaperBackend` creating ReaperPod CRDs)
+- [x] Create `ReaperPod` CRDs per rank via the Kubernetes API (reaper-controller translates to Pods with `runtimeClassName: reaper-v2`)
+- [x] Job script and environment variable distribution via ReaperPod spec
+- [x] Process lifecycle management via ReaperPod CRD (create, status, delete)
+- [x] User identity: set `runAsUser`/`runAsGroup`/`supplementalGroups` on ReaperPod spec
+- [x] Inject `USER`/`HOME`/`LOGNAME` env vars (same as container backend)
 - [x] MPI environment variables for bare-metal (MPICH_OFI_*, UCX_NET_DEVICES, per-implementation)
 - [x] Distributed training env vars (MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE, LOCAL_RANK)
-- [x] Hostfile distribution (content in request JSON, Reaper writes to disk)
+- [x] Hostfile distribution via ConfigMap volume mounted on each ReaperPod
 - [x] Shared resource tracking between container and reaper backends
 - [ ] Integration test with Reaper
-- [ ] **Migrate reaper backend from HTTP agent API to ReaperPod CRD.** The current `backend: reaper` POSTs to a custom HTTP API on each agent, bypassing Kubernetes. Instead, the reaper backend should create `ReaperPod` CRDs (from the reaper project). The ReaperPod controller translates them into Pods with `runtimeClassName: reaper-v2`, giving Kubernetes-native ConfigMap/Secret volumes, kubectl logs/exec, and lifecycle management — all while running on bare metal. This eliminates the need for the custom `ReaperJobRequest` HTTP protocol and makes the reaper backend a thin layer on top of the container backend.
 - [ ] Add `runtimeClassName` field to `ContainerSpec` CRD so users can specify `reaper-v2` directly.
 
 #### Phase 3b: Multi-Task & Resource Binding — PLANNED
 **Goal:** Support `tasks_per_node > 1` with CPU affinity and GPU binding (replaces Slurm's `srun` intra-node functionality).
 
-- [ ] Extend `ReaperJobRequest` with `tasks_per_node`, `cpus_per_task`, `gpus_per_task` fields
+- [ ] Extend `ReaperPod` CRD spec with `tasks_per_node`, `cpus_per_task`, `gpus_per_task` fields
 - [ ] Reaper agent: multi-process spawning (fork N processes per job request)
 - [ ] CPU affinity binding via `sched_setaffinity()` or `numactl` (hwloc-aware)
 - [ ] GPU device binding via `CUDA_VISIBLE_DEVICES` (NVIDIA), `ROCR_VISIBLE_DEVICES` (AMD), `ZE_AFFINITY_MASK` (Intel)
