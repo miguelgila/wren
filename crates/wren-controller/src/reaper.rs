@@ -250,10 +250,7 @@ impl ReaperBackend {
         }
 
         let mut labels = BTreeMap::new();
-        labels.insert(
-            "wren.giar.dev/job".to_string(),
-            job_name.to_string(),
-        );
+        labels.insert("wren.giar.dev/job".to_string(), job_name.to_string());
         labels.insert("wren.giar.dev/role".to_string(), "worker".to_string());
         labels.insert("wren.giar.dev/rank".to_string(), rank.to_string());
         labels.insert(
@@ -344,7 +341,6 @@ impl ReaperBackend {
             Err(e) => Err(WrenError::KubeError(e)),
         }
     }
-
 }
 
 #[async_trait]
@@ -382,12 +378,19 @@ impl ExecutionBackend for ReaperBackend {
 
         let mut resource_ids = Vec::new();
         for (rank, node) in placement.nodes.iter().enumerate() {
-            let reaper_pod =
-                self.build_reaper_pod(job_name, namespace, spec, placement, rank as u32, node, user)?;
+            let reaper_pod = self.build_reaper_pod(
+                job_name,
+                namespace,
+                spec,
+                placement,
+                rank as u32,
+                node,
+                user,
+            )?;
             let pod_name = format!("{}-rank-{}", job_name, rank);
 
-            let obj: kube::api::DynamicObject = serde_json::from_value(reaper_pod)
-                .map_err(|e| WrenError::BackendError {
+            let obj: kube::api::DynamicObject =
+                serde_json::from_value(reaper_pod).map_err(|e| WrenError::BackendError {
                     message: format!("failed to build ReaperPod object: {e}"),
                 })?;
 
@@ -414,11 +417,7 @@ impl ExecutionBackend for ReaperBackend {
         })
     }
 
-    async fn status(
-        &self,
-        job_name: &str,
-        namespace: &str,
-    ) -> Result<BackendJobStatus, WrenError> {
+    async fn status(&self, job_name: &str, namespace: &str) -> Result<BackendJobStatus, WrenError> {
         // Check rank 0 as the representative status (same as old HTTP approach).
         // TODO: aggregate across all ranks for multi-node jobs.
         let pod_name = format!("{}-rank-0", job_name);
@@ -442,8 +441,8 @@ impl ExecutionBackend for ReaperBackend {
             Api::namespaced_with(self.client.clone(), namespace, &api_resource);
 
         // Delete all ReaperPods with the job label
-        let lp = kube::api::ListParams::default()
-            .labels(&format!("wren.giar.dev/job={}", job_name));
+        let lp =
+            kube::api::ListParams::default().labels(&format!("wren.giar.dev/job={}", job_name));
 
         match api.delete_collection(&DeleteParams::default(), &lp).await {
             Ok(_) => {
@@ -560,5 +559,4 @@ mod tests {
             BackendJobStatus::Launching { ready: 0, total: 1 }
         );
     }
-
 }

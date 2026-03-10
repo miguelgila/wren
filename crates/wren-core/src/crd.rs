@@ -535,7 +535,10 @@ mod tests {
         assert_eq!(spec.volumes[0].name, "training-script");
         assert_eq!(spec.volumes[0].mount_path, "/opt/train");
         assert!(spec.volumes[0].read_only);
-        assert_eq!(spec.volumes[0].config_map.as_deref(), Some("pytorch-ddp-train"));
+        assert_eq!(
+            spec.volumes[0].config_map.as_deref(),
+            Some("pytorch-ddp-train")
+        );
         assert_eq!(spec.volumes[1].secret.as_deref(), Some("my-secret"));
         assert_eq!(spec.volumes[2].host_path.as_deref(), Some("/mnt/scratch"));
         assert!(spec.volumes[3].empty_dir);

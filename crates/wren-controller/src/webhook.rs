@@ -102,7 +102,10 @@ pub fn validate_wrenjob(spec: &WrenJobSpec) -> Result<(), Vec<String>> {
             None => {
                 errors.push("backend 'reaper' requires a reaper spec to be provided".to_string())
             }
-            Some(r) if r.command.is_empty() && r.script.as_deref().is_none_or(|s| s.trim().is_empty()) => {
+            Some(r)
+                if r.command.is_empty()
+                    && r.script.as_deref().is_none_or(|s| s.trim().is_empty()) =>
+            {
                 errors.push("reaper spec requires either 'command' or 'script'".to_string())
             }
             _ => {}
@@ -485,7 +488,9 @@ mod tests {
             ..valid_wrenjob_spec()
         };
         let errs = validate_wrenjob(&spec).unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("command") || e.contains("script")));
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("command") || e.contains("script")));
     }
 
     #[test]
