@@ -266,7 +266,6 @@ test_example() {
 
   info "Running: ${name}"
 
-  # Apply each YAML in order
   for yaml in "${yaml_files[@]}"; do
     kubectl apply -f "${yaml}" 2>/dev/null
   done

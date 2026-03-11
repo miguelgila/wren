@@ -125,10 +125,12 @@ async fn handle_scheduling(
     backend: &Arc<dyn ExecutionBackend>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
-    // Security: every job must have a resolved user identity.
-    // Jobs without a valid WrenUser are rejected to prevent running as root.
-    if user.is_none() {
-        let reason = "no valid WrenUser identity resolved — job requires a \
+    // Security: Reaper backend runs on the host without container isolation,
+    // so every Reaper job MUST have a resolved user identity to prevent running as root.
+    // Container backend has its own isolation (Pod Security Standards, securityContext)
+    // so user identity is optional — if present, it sets runAsUser/runAsGroup.
+    if user.is_none() && spec.backend == ExecutionBackendType::Reaper {
+        let reason = "no valid WrenUser identity resolved — Reaper jobs require a \
                        wren.giar.dev/user annotation pointing to an existing WrenUser with non-root uid";
         warn!(job = name, "rejecting job: {}", reason);
         update_status(name, namespace, JobState::Failed, Some(reason), ctx).await?;
