@@ -138,16 +138,16 @@ EOF
     docker build \
       -f "${REPO_ROOT}/docker/Dockerfile.controller" \
       --target runtime-prebuilt \
-      -t wren-controller:latest \
+      -t wren-controller:dev \
       "${REPO_ROOT}/docker/"
     rm -f "${REPO_ROOT}/docker/wren-controller"
   else
     docker build \
       -f "${REPO_ROOT}/docker/Dockerfile.controller" \
-      -t wren-controller:latest \
+      -t wren-controller:dev \
       "${REPO_ROOT}"
   fi
-  kind load docker-image wren-controller:latest --name "${CLUSTER_NAME}"
+  kind load docker-image wren-controller:dev --name "${CLUSTER_NAME}"
 
   info "Deploying controller"
   kubectl apply -f "${REPO_ROOT}/manifests/deployment.yaml"
