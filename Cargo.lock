@@ -3015,6 +3015,7 @@ dependencies = [
  "hostname",
  "http",
  "http-body-util",
+ "hyper",
  "k8s-openapi",
  "kube",
  "kube-runtime",

@@ -759,4 +759,220 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["job-a", "job-b"]);
     }
+
+    #[test]
+    fn test_collect_allocated_job_names_single_job_single_node() {
+        let mut cluster = ClusterState::default();
+        cluster.allocations.insert(
+            "node-0".to_string(),
+            NodeAllocation {
+                used_cpu_millis: 2000,
+                used_memory_bytes: 2_000_000_000,
+                used_gpus: 4,
+                jobs: vec!["job-gpu".to_string()],
+            },
+        );
+        let names = collect_allocated_job_names(&cluster);
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "job-gpu");
+    }
+
+    #[test]
+    fn test_collect_allocated_job_names_node_with_empty_job_list() {
+        let mut cluster = ClusterState::default();
+        cluster.allocations.insert(
+            "node-0".to_string(),
+            NodeAllocation {
+                used_cpu_millis: 0,
+                used_memory_bytes: 0,
+                used_gpus: 0,
+                jobs: vec![],
+            },
+        );
+        let names = collect_allocated_job_names(&cluster);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_collect_allocated_job_names_deduplicates_same_job_across_nodes() {
+        // A multi-node gang job appears in allocations on every node it uses —
+        // the result must contain it only once.
+        let mut cluster = ClusterState::default();
+        for node in ["node-0", "node-1", "node-2", "node-3"] {
+            cluster.allocations.insert(
+                node.to_string(),
+                NodeAllocation {
+                    used_cpu_millis: 1000,
+                    used_memory_bytes: 1_000_000_000,
+                    used_gpus: 0,
+                    jobs: vec!["gang-job".to_string()],
+                },
+            );
+        }
+        let names = collect_allocated_job_names(&cluster);
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "gang-job");
+    }
+
+    // --- validate_job_spec additional edge-case tests ---
+
+    #[test]
+    fn test_validate_job_spec_reaper_backend_with_reaper_spec_ok() {
+        // Providing a ReaperSpec is optional for the reaper backend but should
+        // not cause validation to fail when it is present.
+        use wren_core::ReaperSpec;
+        let mut spec = make_spec(4, ExecutionBackendType::Reaper, None);
+        spec.reaper = Some(ReaperSpec {
+            script: Some("#!/bin/bash\n./app".to_string()),
+            ..Default::default()
+        });
+        assert!(validate_job_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn test_validate_job_spec_container_backend_with_both_specs_ok() {
+        // Having both a container spec and a reaper spec set is unusual but the
+        // validator only enforces that the container spec is present for the
+        // Container backend — extra fields are not rejected.
+        use wren_core::ReaperSpec;
+        let mut spec = make_spec(
+            2,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
+        spec.reaper = Some(ReaperSpec::default());
+        assert!(validate_job_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn test_validate_job_spec_large_node_count_ok() {
+        // The validator has no upper-bound check; large node counts are allowed
+        // and will fail later at scheduling time if the cluster is too small.
+        let spec = make_spec(
+            1024,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
+        assert!(validate_job_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn test_validate_job_spec_error_message_mentions_container_spec() {
+        // Verify the error text is actionable — it tells the user what is missing.
+        let spec = make_spec(1, ExecutionBackendType::Container, None);
+        let err = validate_job_spec(&spec).unwrap_err();
+        assert!(
+            err.contains("container spec"),
+            "expected error to mention 'container spec', got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_job_spec_error_message_mentions_nodes() {
+        // Verify the zero-nodes error is actionable.
+        let spec = make_spec(0, ExecutionBackendType::Reaper, None);
+        let err = validate_job_spec(&spec).unwrap_err();
+        assert!(
+            err.contains("nodes"),
+            "expected error to mention 'nodes', got: {err}"
+        );
+    }
+
+    // --- check_walltime_exceeded additional format/boundary tests ---
+
+    #[test]
+    fn test_check_walltime_exceeded_seconds_format() {
+        // "3600" (bare integer) is a valid walltime meaning 3600 seconds.
+        // A job started 2 hours ago has exceeded a 3600-second walltime.
+        let two_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let result = check_walltime_exceeded(Some("3600"), Some(&two_hours_ago));
+        assert!(
+            result.is_some(),
+            "bare-seconds walltime should be recognised"
+        );
+    }
+
+    #[test]
+    fn test_check_walltime_not_exceeded_seconds_format() {
+        // A job started just now has not exceeded a 1-hour walltime expressed
+        // as bare seconds.
+        let now = chrono::Utc::now().to_rfc3339();
+        assert!(check_walltime_exceeded(Some("3600"), Some(&now)).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_exceeded_days_format() {
+        // "1d" = 86400 s. A job started 2 days ago should be exceeded.
+        let two_days_ago = (chrono::Utc::now() - chrono::Duration::days(2)).to_rfc3339();
+        let result = check_walltime_exceeded(Some("1d"), Some(&two_days_ago));
+        assert!(result.is_some(), "days walltime should be recognised");
+    }
+
+    #[test]
+    fn test_check_walltime_exceeded_mixed_format() {
+        // "1h30m" = 5400 s. A job started 2 hours ago should be exceeded.
+        let two_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let result = check_walltime_exceeded(Some("1h30m"), Some(&two_hours_ago));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_check_walltime_not_exceeded_mixed_format() {
+        // "2h30m" = 9000 s. A job started 1 hour ago should NOT be exceeded.
+        let one_hour_ago = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        assert!(check_walltime_exceeded(Some("2h30m"), Some(&one_hour_ago)).is_none());
+    }
+
+    #[test]
+    fn test_check_walltime_exceeded_message_contains_duration() {
+        // The returned message must include the walltime string so operators can
+        // understand why the job was terminated.
+        let two_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let msg = check_walltime_exceeded(Some("1h"), Some(&two_hours_ago)).unwrap();
+        assert!(
+            msg.contains("walltime"),
+            "message should mention 'walltime', got: {msg}"
+        );
+    }
+
+    // --- should_cleanup_pods additional boundary tests ---
+
+    #[test]
+    fn test_should_cleanup_completion_time_takes_precedence_over_start_time() {
+        // completion_time is recent (should NOT trigger cleanup) but start_time
+        // is old. completion_time must win — pods should be kept.
+        let old = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+        let recent = chrono::Utc::now().to_rfc3339();
+        let status = WrenJobStatus {
+            completion_time: Some(recent),
+            start_time: Some(old),
+            ..Default::default()
+        };
+        assert!(
+            !should_cleanup_pods(&status),
+            "recent completion_time should prevent cleanup even if start_time is old"
+        );
+    }
+
+    #[test]
+    fn test_should_cleanup_pods_just_under_ttl() {
+        // 23 hours — within the 24-hour TTL — must not trigger cleanup.
+        let just_under = (chrono::Utc::now() - chrono::Duration::hours(23)).to_rfc3339();
+        let status = WrenJobStatus {
+            completion_time: Some(just_under),
+            ..Default::default()
+        };
+        assert!(!should_cleanup_pods(&status));
+    }
+
+    #[test]
+    fn test_should_cleanup_pods_well_past_ttl() {
+        // 48 hours — well past the 24-hour TTL — must trigger cleanup.
+        let two_days_ago = (chrono::Utc::now() - chrono::Duration::hours(48)).to_rfc3339();
+        let status = WrenJobStatus {
+            completion_time: Some(two_days_ago),
+            ..Default::default()
+        };
+        assert!(should_cleanup_pods(&status));
+    }
 }

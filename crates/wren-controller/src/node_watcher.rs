@@ -50,10 +50,11 @@ impl NodeWatcher {
 
         let btree_labels = node.metadata.labels.clone().unwrap_or_default();
 
-        let switch_group = btree_labels
-            .get("network.wren.giar.dev/switch-group")
+        let switch_group = btree_labels.get("topology.wren.giar.dev/switch").cloned();
+        let rack = btree_labels
+            .get("topology.wren.giar.dev/rack")
+            .or_else(|| btree_labels.get("topology.kubernetes.io/zone"))
             .cloned();
-        let rack = btree_labels.get("topology.kubernetes.io/zone").cloned();
 
         let labels: std::collections::HashMap<String, String> = btree_labels.into_iter().collect();
 
@@ -188,7 +189,7 @@ mod tests {
 
         let mut labels = BTreeMap::new();
         labels.insert(
-            "network.wren.giar.dev/switch-group".to_string(),
+            "topology.wren.giar.dev/switch".to_string(),
             "sw-rack-01".to_string(),
         );
 
@@ -505,5 +506,86 @@ mod tests {
         };
 
         assert!(NodeWatcher::parse_node(&node).is_some());
+    }
+
+    fn make_basic_node(name: &str) -> Node {
+        use k8s_openapi::api::core::v1::{NodeSpec, NodeStatus};
+        use std::collections::BTreeMap;
+
+        let mut allocatable = BTreeMap::new();
+        allocatable.insert("cpu".to_string(), Quantity("4".to_string()));
+        allocatable.insert("memory".to_string(), Quantity("8Gi".to_string()));
+
+        Node {
+            metadata: kube::api::ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                unschedulable: Some(false),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                allocatable: Some(allocatable),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn rack_label_takes_priority_over_zone_label() {
+        use std::collections::BTreeMap;
+
+        let mut node = make_basic_node("rack-and-zone-node");
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "topology.wren.giar.dev/rack".to_string(),
+            "rack-12".to_string(),
+        );
+        labels.insert(
+            "topology.kubernetes.io/zone".to_string(),
+            "us-east-1a".to_string(),
+        );
+        node.metadata.labels = Some(labels);
+
+        let nr = NodeWatcher::parse_node(&node).unwrap();
+        assert_eq!(
+            nr.rack.as_deref(),
+            Some("rack-12"),
+            "rack label should take priority over zone label"
+        );
+    }
+
+    #[test]
+    fn node_with_rack_label_populates_rack_field() {
+        use std::collections::BTreeMap;
+
+        let mut node = make_basic_node("rack-only-node");
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "topology.wren.giar.dev/rack".to_string(),
+            "rack-07".to_string(),
+        );
+        node.metadata.labels = Some(labels);
+
+        let nr = NodeWatcher::parse_node(&node).unwrap();
+        assert_eq!(nr.rack.as_deref(), Some("rack-07"));
+        assert!(nr.switch_group.is_none());
+    }
+
+    #[test]
+    fn node_with_no_topology_labels_has_none_switch_and_rack() {
+        // No topology.wren.giar.dev/switch, no rack, no zone → both None
+        let node = make_basic_node("plain-node");
+
+        let nr = NodeWatcher::parse_node(&node).unwrap();
+        assert!(
+            nr.switch_group.is_none(),
+            "switch_group should be None when no switch label is present"
+        );
+        assert!(
+            nr.rack.is_none(),
+            "rack should be None when no rack or zone label is present"
+        );
     }
 }

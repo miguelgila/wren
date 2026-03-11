@@ -499,6 +499,66 @@ fn map_phase_to_status(status: &ReaperPodStatus) -> BackendJobStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wren_core::crd::{MPISpec, ReaperSpec, ReaperVolumeSpec};
+
+    // -------------------------------------------------------------------------
+    // Mock client helpers
+    // -------------------------------------------------------------------------
+
+    /// Build a `ReaperBackend` with a fake `Client` that never makes real API
+    /// calls.  `build_reaper_pod` and `build_rank_env` are pure functions that
+    /// never touch `self.client`, so any valid `Client` instance suffices.
+    fn make_backend() -> ReaperBackend {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use tower::service_fn;
+
+        let svc = service_fn(|_req: http::Request<_>| async {
+            let resp = http::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(Full::from(Bytes::from("{}")))
+                .unwrap();
+            Ok::<_, std::convert::Infallible>(resp)
+        });
+        let client = Client::new(svc, "default");
+        ReaperBackend::new(client)
+    }
+
+    /// Minimal `WrenJobSpec` with a command-based `ReaperSpec`.
+    fn make_spec(nodes: u32) -> WrenJobSpec {
+        WrenJobSpec {
+            nodes,
+            tasks_per_node: 1,
+            backend: wren_core::types::ExecutionBackendType::Reaper,
+            reaper: Some(ReaperSpec {
+                command: vec!["python3".to_string(), "/opt/train.py".to_string()],
+                args: vec!["--epochs".to_string(), "5".to_string()],
+                ..Default::default()
+            }),
+            ..serde_json::from_str(&format!(r#"{{"nodes": {}}}"#, nodes)).unwrap()
+        }
+    }
+
+    /// Placement with `count` sequentially-named nodes.
+    fn make_placement(count: usize) -> Placement {
+        Placement {
+            nodes: (0..count).map(|i| format!("node-{}", i)).collect(),
+            score: 1.0,
+        }
+    }
+
+    /// A `UserIdentity` representing a typical HPC user.
+    fn make_user() -> UserIdentity {
+        UserIdentity {
+            username: "alice".to_string(),
+            uid: 1001,
+            gid: 1001,
+            supplemental_groups: vec![2000, 3000],
+            home_dir: Some("/home/alice".to_string()),
+            default_project: None,
+        }
+    }
 
     // -------------------------------------------------------------------------
     // ReaperPod phase mapping
@@ -531,6 +591,38 @@ mod tests {
     }
 
     #[test]
+    fn test_map_phase_failed_uses_exit_code_when_no_message() {
+        let s = ReaperPodStatus {
+            phase: Some("Failed".to_string()),
+            exit_code: Some(2),
+            message: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            map_phase_to_status(&s),
+            BackendJobStatus::Failed {
+                message: "job exited with code 2".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_map_phase_failed_uses_minus_one_when_no_exit_code_and_no_message() {
+        let s = ReaperPodStatus {
+            phase: Some("Failed".to_string()),
+            exit_code: None,
+            message: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            map_phase_to_status(&s),
+            BackendJobStatus::Failed {
+                message: "job exited with code -1".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn test_map_phase_running() {
         let s = ReaperPodStatus {
             phase: Some("Running".to_string()),
@@ -558,5 +650,729 @@ mod tests {
             map_phase_to_status(&s),
             BackendJobStatus::Launching { ready: 0, total: 1 }
         );
+    }
+
+    #[test]
+    fn test_map_phase_unknown_string_treated_as_launching() {
+        let s = ReaperPodStatus {
+            phase: Some("Initializing".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            map_phase_to_status(&s),
+            BackendJobStatus::Launching { ready: 0, total: 1 }
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — metadata and top-level structure
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_returns_correct_api_version_and_kind() {
+        let backend = make_backend();
+        let spec = make_spec(2);
+        let placement = make_placement(2);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(pod["apiVersion"], "reaper.io/v1alpha1");
+        assert_eq!(pod["kind"], "ReaperPod");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_metadata_name_encodes_job_name_and_rank() {
+        let backend = make_backend();
+        let spec = make_spec(4);
+        let placement = make_placement(4);
+        let pod = backend
+            .build_reaper_pod("training-job", "hpc", &spec, &placement, 3, "node-3", None)
+            .unwrap();
+
+        assert_eq!(pod["metadata"]["name"], "training-job-rank-3");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_metadata_namespace_matches_argument() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "team-ns", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(pod["metadata"]["namespace"], "team-ns");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_labels_contain_job_name_and_rank() {
+        let backend = make_backend();
+        let spec = make_spec(3);
+        let placement = make_placement(3);
+        let pod = backend
+            .build_reaper_pod("sim-job", "default", &spec, &placement, 1, "node-1", None)
+            .unwrap();
+
+        let labels = &pod["metadata"]["labels"];
+        assert_eq!(labels["wren.giar.dev/job"], "sim-job");
+        assert_eq!(labels["wren.giar.dev/rank"], "1");
+        assert_eq!(labels["wren.giar.dev/role"], "worker");
+        assert_eq!(labels["app.kubernetes.io/managed-by"], "wren");
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — spec.command and spec.args
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_command_taken_from_reaper_spec() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let cmd = pod["spec"]["command"].as_array().unwrap();
+        assert_eq!(cmd[0], "python3");
+        assert_eq!(cmd[1], "/opt/train.py");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_args_taken_from_reaper_spec() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let args = pod["spec"]["args"].as_array().unwrap();
+        assert_eq!(args[0], "--epochs");
+        assert_eq!(args[1], "5");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_script_wraps_in_sh_c_when_no_command() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec![],
+            script: Some("#!/bin/bash\necho hello".to_string()),
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let cmd = pod["spec"]["command"].as_array().unwrap();
+        assert_eq!(cmd[0], "/bin/sh");
+        assert_eq!(cmd[1], "-c");
+
+        let args = pod["spec"]["args"].as_array().unwrap();
+        assert!(args[0].as_str().unwrap().contains("echo hello"));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_errors_when_neither_command_nor_script_provided() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec![],
+            script: None,
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let result =
+            backend.build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None);
+
+        assert!(result.is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — spec.nodeName
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_node_name_matches_placement_node_argument() {
+        let backend = make_backend();
+        let spec = make_spec(2);
+        let placement = make_placement(2);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 1, "node-1", None)
+            .unwrap();
+
+        assert_eq!(pod["spec"]["nodeName"], "node-1");
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — user identity fields
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_sets_run_as_user_and_group_when_user_provided() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let user = make_user();
+        let pod = backend
+            .build_reaper_pod(
+                "myjob",
+                "default",
+                &spec,
+                &placement,
+                0,
+                "node-0",
+                Some(&user),
+            )
+            .unwrap();
+
+        assert_eq!(pod["spec"]["runAsUser"], 1001);
+        assert_eq!(pod["spec"]["runAsGroup"], 1001);
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_sets_supplemental_groups_when_user_provided() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let user = make_user();
+        let pod = backend
+            .build_reaper_pod(
+                "myjob",
+                "default",
+                &spec,
+                &placement,
+                0,
+                "node-0",
+                Some(&user),
+            )
+            .unwrap();
+
+        let groups = pod["spec"]["supplementalGroups"].as_array().unwrap();
+        assert!(groups.contains(&serde_json::json!(2000)));
+        assert!(groups.contains(&serde_json::json!(3000)));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_omits_identity_fields_when_no_user() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert!(pod["spec"].get("runAsUser").is_none());
+        assert!(pod["spec"].get("runAsGroup").is_none());
+        assert!(pod["spec"].get("supplementalGroups").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_omits_supplemental_groups_when_user_has_none() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let user = UserIdentity {
+            supplemental_groups: vec![],
+            ..make_user()
+        };
+        let pod = backend
+            .build_reaper_pod(
+                "myjob",
+                "default",
+                &spec,
+                &placement,
+                0,
+                "node-0",
+                Some(&user),
+            )
+            .unwrap();
+
+        assert!(pod["spec"].get("supplementalGroups").is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — environment variables
+    // -------------------------------------------------------------------------
+
+    fn env_value(pod: &serde_json::Value, key: &str) -> Option<String> {
+        pod["spec"]["env"]
+            .as_array()?
+            .iter()
+            .find(|e| e["name"].as_str() == Some(key))
+            .and_then(|e| e["value"].as_str())
+            .map(|s| s.to_string())
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_contains_rank_and_world_size() {
+        let backend = make_backend();
+        let mut spec = make_spec(4);
+        spec.nodes = 4;
+        spec.tasks_per_node = 1;
+        let placement = make_placement(4);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 2, "node-2", None)
+            .unwrap();
+
+        assert_eq!(env_value(&pod, "RANK").as_deref(), Some("2"));
+        assert_eq!(env_value(&pod, "WORLD_SIZE").as_deref(), Some("4"));
+        assert_eq!(env_value(&pod, "LOCAL_RANK").as_deref(), Some("0"));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_master_addr_is_first_placement_node() {
+        let backend = make_backend();
+        let spec = make_spec(3);
+        let placement = make_placement(3);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        // MASTER_ADDR is always the first node in the placement
+        assert_eq!(env_value(&pod, "MASTER_ADDR").as_deref(), Some("node-0"));
+        assert_eq!(env_value(&pod, "MASTER_PORT").as_deref(), Some("29500"));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_contains_user_home_logname_when_user_provided() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let user = make_user();
+        let pod = backend
+            .build_reaper_pod(
+                "myjob",
+                "default",
+                &spec,
+                &placement,
+                0,
+                "node-0",
+                Some(&user),
+            )
+            .unwrap();
+
+        assert_eq!(env_value(&pod, "USER").as_deref(), Some("alice"));
+        assert_eq!(env_value(&pod, "LOGNAME").as_deref(), Some("alice"));
+        assert_eq!(env_value(&pod, "HOME").as_deref(), Some("/home/alice"));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_omits_home_when_user_has_no_home_dir() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let user = UserIdentity {
+            home_dir: None,
+            ..make_user()
+        };
+        let pod = backend
+            .build_reaper_pod(
+                "myjob",
+                "default",
+                &spec,
+                &placement,
+                0,
+                "node-0",
+                Some(&user),
+            )
+            .unwrap();
+
+        assert_eq!(env_value(&pod, "USER").as_deref(), Some("alice"));
+        // HOME should not appear when not set
+        assert!(env_value(&pod, "HOME").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_omits_user_vars_when_no_user() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert!(env_value(&pod, "USER").is_none());
+        assert!(env_value(&pod, "LOGNAME").is_none());
+        assert!(env_value(&pod, "HOME").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_contains_wren_job_name() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("my-sim", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(env_value(&pod, "WREN_JOB_NAME").as_deref(), Some("my-sim"));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_contains_wren_mpi_rank() {
+        let backend = make_backend();
+        let spec = make_spec(2);
+        let placement = make_placement(2);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 1, "node-1", None)
+            .unwrap();
+
+        assert_eq!(env_value(&pod, "WREN_MPI_RANK").as_deref(), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_env_contains_wren_hostfile_content() {
+        let backend = make_backend();
+        let spec = make_spec(2);
+        let placement = make_placement(2);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let content = env_value(&pod, "WREN_HOSTFILE_CONTENT").unwrap();
+        assert!(content.contains("node-0"));
+        assert!(content.contains("node-1"));
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — MPI hostfile volume
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_adds_hostfile_volume_when_mpi_configured() {
+        let backend = make_backend();
+        let mut spec = make_spec(2);
+        spec.mpi = Some(MPISpec {
+            implementation: "openmpi".to_string(),
+            ssh_auth: false,
+            fabric_interface: None,
+        });
+        let placement = make_placement(2);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let volumes = pod["spec"]["volumes"].as_array().unwrap();
+        let hostfile_vol = volumes.iter().find(|v| v["name"] == "hostfile");
+        assert!(hostfile_vol.is_some(), "hostfile volume should be present");
+        let hv = hostfile_vol.unwrap();
+        assert_eq!(hv["configMap"], "myjob-hostfile");
+        assert_eq!(hv["readOnly"], true);
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_omits_hostfile_volume_when_no_mpi() {
+        let backend = make_backend();
+        let spec = make_spec(2);
+        let placement = make_placement(2);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let volumes = pod["spec"]["volumes"].as_array().unwrap();
+        let hostfile_vol = volumes.iter().find(|v| v["name"] == "hostfile");
+        assert!(hostfile_vol.is_none(), "hostfile volume should be absent");
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — user-defined volumes
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_includes_configmap_volume_from_reaper_spec() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            volumes: vec![ReaperVolumeSpec {
+                name: "training-data".to_string(),
+                mount_path: "/data".to_string(),
+                read_only: true,
+                config_map: Some("my-cm".to_string()),
+                secret: None,
+                host_path: None,
+                empty_dir: false,
+            }],
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let volumes = pod["spec"]["volumes"].as_array().unwrap();
+        let data_vol = volumes.iter().find(|v| v["name"] == "training-data");
+        assert!(data_vol.is_some());
+        let dv = data_vol.unwrap();
+        assert_eq!(dv["mountPath"], "/data");
+        assert_eq!(dv["readOnly"], true);
+        assert_eq!(dv["configMap"], "my-cm");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_includes_secret_volume_from_reaper_spec() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            volumes: vec![ReaperVolumeSpec {
+                name: "creds".to_string(),
+                mount_path: "/etc/creds".to_string(),
+                read_only: true,
+                config_map: None,
+                secret: Some("my-secret".to_string()),
+                host_path: None,
+                empty_dir: false,
+            }],
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let volumes = pod["spec"]["volumes"].as_array().unwrap();
+        let sec_vol = volumes.iter().find(|v| v["name"] == "creds");
+        assert!(sec_vol.is_some());
+        assert_eq!(sec_vol.unwrap()["secret"], "my-secret");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_includes_host_path_volume_from_reaper_spec() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            volumes: vec![ReaperVolumeSpec {
+                name: "scratch".to_string(),
+                mount_path: "/scratch".to_string(),
+                read_only: false,
+                config_map: None,
+                secret: None,
+                host_path: Some("/mnt/nvme".to_string()),
+                empty_dir: false,
+            }],
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let volumes = pod["spec"]["volumes"].as_array().unwrap();
+        let hp_vol = volumes.iter().find(|v| v["name"] == "scratch");
+        assert!(hp_vol.is_some());
+        assert_eq!(hp_vol.unwrap()["hostPath"], "/mnt/nvme");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_includes_empty_dir_volume_from_reaper_spec() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            volumes: vec![ReaperVolumeSpec {
+                name: "tmpwork".to_string(),
+                mount_path: "/tmp/work".to_string(),
+                read_only: false,
+                config_map: None,
+                secret: None,
+                host_path: None,
+                empty_dir: true,
+            }],
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        let volumes = pod["spec"]["volumes"].as_array().unwrap();
+        let ed_vol = volumes.iter().find(|v| v["name"] == "tmpwork");
+        assert!(ed_vol.is_some());
+        assert_eq!(ed_vol.unwrap()["emptyDir"], true);
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — optional spec fields: dnsMode, overlayName, workingDir
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_sets_dns_mode_when_provided() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            dns_mode: Some("kubernetes".to_string()),
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(pod["spec"]["dnsMode"], "kubernetes");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_omits_dns_mode_when_not_provided() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert!(pod["spec"].get("dnsMode").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_sets_overlay_name_when_provided() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            overlay_name: Some("shared-team".to_string()),
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(pod["spec"]["overlayName"], "shared-team");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_omits_overlay_name_when_not_provided() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert!(pod["spec"].get("overlayName").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_sets_working_dir_when_provided() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            working_dir: Some("/workspace".to_string()),
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(pod["spec"]["workingDir"], "/workspace");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_omits_working_dir_when_not_provided() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert!(pod["spec"].get("workingDir").is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // build_reaper_pod — spec invariants
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_restart_policy_is_never() {
+        let backend = make_backend();
+        let spec = make_spec(1);
+        let placement = make_placement(1);
+        let pod = backend
+            .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
+            .unwrap();
+
+        assert_eq!(pod["spec"]["restartPolicy"], "Never");
+    }
+
+    #[tokio::test]
+    async fn test_build_reaper_pod_errors_when_reaper_spec_missing() {
+        let backend = make_backend();
+        // WrenJobSpec with no reaper section
+        let spec: WrenJobSpec = serde_json::from_str(r#"{"nodes": 1}"#).unwrap();
+        let placement = make_placement(1);
+        let result =
+            backend.build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None);
+
+        assert!(result.is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // build_rank_env — validation
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_rank_env_errors_when_neither_command_nor_script() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec![],
+            script: None,
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let result = backend.build_rank_env("myjob", &spec, &placement, 0, None);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_build_rank_env_errors_when_reaper_spec_missing() {
+        let backend = make_backend();
+        let spec: WrenJobSpec = serde_json::from_str(r#"{"nodes": 1}"#).unwrap();
+        let placement = make_placement(1);
+        let result = backend.build_rank_env("myjob", &spec, &placement, 0, None);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_build_rank_env_succeeds_with_script_and_no_command() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        spec.reaper = Some(ReaperSpec {
+            command: vec![],
+            script: Some("echo hi".to_string()),
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let result = backend.build_rank_env("myjob", &spec, &placement, 0, None);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_build_rank_env_user_env_vars_override_defaults() {
+        let backend = make_backend();
+        let mut spec = make_spec(1);
+        let mut user_env = std::collections::HashMap::new();
+        user_env.insert("CUSTOM_VAR".to_string(), "custom_value".to_string());
+        spec.reaper = Some(ReaperSpec {
+            command: vec!["./app".to_string()],
+            environment: user_env,
+            ..Default::default()
+        });
+        let placement = make_placement(1);
+        let env = backend
+            .build_rank_env("myjob", &spec, &placement, 0, None)
+            .unwrap();
+
+        assert_eq!(env["CUSTOM_VAR"], "custom_value");
     }
 }

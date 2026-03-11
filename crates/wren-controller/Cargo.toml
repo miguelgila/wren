@@ -39,4 +39,5 @@ base64 = { workspace = true }
 http = "1"
 bytes = "1"
 http-body-util = "0.1"
+hyper = "1"
 tower = { version = "0.5", features = ["util"] }
