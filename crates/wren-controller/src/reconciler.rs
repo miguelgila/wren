@@ -552,7 +552,14 @@ async fn update_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wren_core::{ClusterState, ContainerSpec, ExecutionBackendType, NodeAllocation};
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use kube::api::ObjectMeta;
+    use std::sync::Mutex;
+    use tower::service_fn;
+    use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
+    use wren_core::{ClusterState, ContainerSpec, ExecutionBackendType, NodeAllocation, NodeResources};
 
     fn make_spec(
         nodes: u32,
@@ -974,5 +981,660 @@ mod tests {
             ..Default::default()
         };
         assert!(should_cleanup_pods(&status));
+    }
+
+
+    // =========================================================================
+    // Async tests for reconcile(), handle_pending(), handle_scheduling(),
+    // handle_running(), handle_terminal(), cleanup_stale_allocations(),
+    // update_status()
+    // =========================================================================
+
+    // --- Mock infrastructure ---
+
+    /// A configurable mock ExecutionBackend for unit testing the reconciler.
+    struct MockBackend {
+        launch_result: Mutex<Option<Result<LaunchResult, WrenError>>>,
+        status_result: Mutex<BackendJobStatus>,
+        terminate_called: Mutex<bool>,
+        cleanup_called: Mutex<bool>,
+    }
+
+    impl MockBackend {
+        /// Construct a mock that always succeeds on launch and returns `status`
+        /// from `status()`. Returns an `Arc<dyn ExecutionBackend>` so it can be
+        /// passed directly to `make_ctx` without extra casts.
+        fn new_ok(status: BackendJobStatus) -> Arc<dyn ExecutionBackend> {
+            Arc::new(Self {
+                launch_result: Mutex::new(Some(Ok(LaunchResult {
+                    resource_ids: vec!["pod-0".to_string()],
+                    message: "launched".to_string(),
+                }))),
+                status_result: Mutex::new(status),
+                terminate_called: Mutex::new(false),
+                cleanup_called: Mutex::new(false),
+            })
+        }
+
+        /// Construct a mock whose `launch()` returns the given error.
+        fn new_launch_err(err: WrenError) -> Arc<dyn ExecutionBackend> {
+            Arc::new(Self {
+                launch_result: Mutex::new(Some(Err(err))),
+                status_result: Mutex::new(BackendJobStatus::Running),
+                terminate_called: Mutex::new(false),
+                cleanup_called: Mutex::new(false),
+            })
+        }
+    }
+
+    // Helper accessors via raw pointer — the Arc vtable pointer points to the
+    // concrete type, so this is safe as long as every `Arc<dyn ExecutionBackend>`
+    // in these tests is backed by a `MockBackend` (which they all are).
+    fn terminate_called(b: &Arc<dyn ExecutionBackend>) -> bool {
+        let raw: *const MockBackend = Arc::as_ptr(b) as *const MockBackend;
+        unsafe { *(*raw).terminate_called.lock().unwrap() }
+    }
+
+    fn cleanup_called(b: &Arc<dyn ExecutionBackend>) -> bool {
+        let raw: *const MockBackend = Arc::as_ptr(b) as *const MockBackend;
+        unsafe { *(*raw).cleanup_called.lock().unwrap() }
+    }
+
+    #[async_trait]
+    impl ExecutionBackend for MockBackend {
+        async fn launch(
+            &self,
+            _job_name: &str,
+            _namespace: &str,
+            _spec: &wren_core::WrenJobSpec,
+            _placement: &wren_core::Placement,
+            _user: Option<&UserIdentity>,
+        ) -> Result<LaunchResult, WrenError> {
+            let mut guard = self.launch_result.lock().unwrap();
+            guard.take().unwrap_or(Ok(LaunchResult {
+                resource_ids: vec![],
+                message: "default".to_string(),
+            }))
+        }
+
+        async fn status(
+            &self,
+            _job_name: &str,
+            _namespace: &str,
+        ) -> Result<BackendJobStatus, WrenError> {
+            Ok(self.status_result.lock().unwrap().clone())
+        }
+
+        async fn terminate(&self, _job_name: &str, _namespace: &str) -> Result<(), WrenError> {
+            *self.terminate_called.lock().unwrap() = true;
+            Ok(())
+        }
+
+        async fn cleanup(&self, _job_name: &str, _namespace: &str) -> Result<(), WrenError> {
+            *self.cleanup_called.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    /// Route a mock request to a JSON body appropriate for its resource type.
+    fn route_ok_response(method: &str, path: &str) -> (u16, Bytes) {
+        // WrenUser lookups → 404 (no user by default)
+        if path.contains("wrenusers") {
+            return (404, Bytes::from(
+                r#"{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}"#
+            ));
+        }
+        // ConfigMap operations (job-id counter)
+        if path.contains("configmaps") {
+            return (200, Bytes::from(
+                r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"wren-job-id-counter","namespace":"default"},"data":{"next_job_id":"1"}}"#
+            ));
+        }
+        // WrenJob status patches and gets
+        if path.contains("wrenjobs") {
+            return (200, Bytes::from(
+                r#"{"apiVersion":"wren.giar.dev/v1alpha1","kind":"WrenJob","metadata":{"name":"test","namespace":"default"},"spec":{"queue":"default","priority":50,"nodes":1,"tasksPerNode":1,"backend":"container","container":{"image":"busybox","command":[],"args":[],"hostNetwork":false,"volumeMounts":[],"env":[]},"dependencies":[]}}"#
+            ));
+        }
+        let _ = method; // suppress unused warning
+        (200, Bytes::from(r#"{"metadata":{}}"#))
+    }
+
+    /// Build a kube::Client that returns valid responses for all common operations.
+    fn make_ok_client() -> Client {
+        let svc = service_fn(move |req: http::Request<_>| {
+            let method = req.method().to_string();
+            let path = req.uri().path().to_string();
+            async move {
+                let (status, body) = route_ok_response(&method, &path);
+                let resp = http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::from(body))
+                    .unwrap();
+                Ok::<_, std::convert::Infallible>(resp)
+            }
+        });
+        Client::new(svc, "default")
+    }
+
+    /// Build a kube::Client that returns 404 for GET requests on the given
+    /// WrenJob name and valid responses for everything else.
+    fn make_job_not_found_client(job_name: &str) -> Client {
+        let target = job_name.to_string();
+        let svc = service_fn(move |req: http::Request<_>| {
+            let method = req.method().to_string();
+            let path = req.uri().path().to_string();
+            let is_not_found = method == "GET"
+                && path.contains("wrenjobs")
+                && path.contains(target.as_str());
+            async move {
+                let (status, body) = if is_not_found {
+                    (404u16, Bytes::from(
+                        r#"{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}"#
+                    ))
+                } else {
+                    route_ok_response(&method, &path)
+                };
+                let resp = http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::from(body))
+                    .unwrap();
+                Ok::<_, std::convert::Infallible>(resp)
+            }
+        });
+        Client::new(svc, "default")
+    }
+
+    /// Build a cluster state with `n` nodes, each with 4 CPUs and 4 GB RAM.
+    fn make_cluster_with_nodes(n: usize) -> ClusterState {
+        let mut cluster = ClusterState::default();
+        for i in 0..n {
+            cluster.nodes.push(NodeResources {
+                name: format!("node-{}", i),
+                allocatable_cpu_millis: 4000,
+                allocatable_memory_bytes: 4_000_000_000,
+                allocatable_gpus: 0,
+                labels: std::collections::HashMap::new(),
+                switch_group: None,
+                rack: None,
+            });
+        }
+        cluster
+    }
+
+    /// Build a ReconcilerContext with the given client and backends.
+    fn make_ctx(
+        client: Client,
+        container_backend: Arc<dyn ExecutionBackend>,
+        reaper_backend: Arc<dyn ExecutionBackend>,
+        cluster: ClusterState,
+    ) -> ReconcilerContext {
+        ReconcilerContext {
+            job_id_allocator: JobIdAllocator::new(client.clone(), "default"),
+            client,
+            cluster_state: Arc::new(RwLock::new(cluster)),
+            container_backend,
+            reaper_backend,
+            metrics: Metrics::new(),
+            reservations: RwLock::new(ReservationManager::default()),
+        }
+    }
+
+    /// Build a minimal WrenJob object for testing.
+    fn make_wrenjob(name: &str, state: JobState, spec: wren_core::WrenJobSpec) -> WrenJob {
+        WrenJob {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some("default".to_string()),
+                annotations: None,
+                ..Default::default()
+            },
+            spec,
+            status: Some(WrenJobStatus {
+                state,
+                ..Default::default()
+            }),
+        }
+    }
+
+    // --- handle_pending tests ---
+
+    #[tokio::test]
+    async fn test_handle_pending_invalid_job_zero_nodes() {
+        // A job with 0 nodes must transition directly to Failed (no Err return).
+        let spec = make_spec(0, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result = handle_pending("job-zero", "default", &spec, &ctx).await;
+        assert!(result.is_ok(), "handle_pending should not return Err");
+        assert!(!cleanup_called(&backend));
+    }
+
+    #[tokio::test]
+    async fn test_handle_pending_invalid_job_no_container_spec() {
+        // Container backend without container spec -> Failed.
+        let spec = make_spec(2, ExecutionBackendType::Container, None);
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result = handle_pending("job-nospec", "default", &spec, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_pending_valid_job_transitions_to_scheduling() {
+        // A valid container job must get through validate_job_spec and allocate
+        // a job ID without returning an error.
+        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result = handle_pending("job-valid", "default", &spec, &ctx).await;
+        assert!(result.is_ok(), "valid pending job should not error: {:?}", result);
+    }
+
+    // --- handle_scheduling tests ---
+
+    #[tokio::test]
+    async fn test_handle_scheduling_successful_placement() {
+        // 2-node job on a 2-node cluster -> launch succeeds.
+        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result = handle_scheduling("job-ok", "default", &spec, None, &backend, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_scheduling_no_feasible_placement() {
+        // Requesting 5 nodes on a 2-node cluster -- no placement found, stays
+        // in Scheduling (function returns Ok without error).
+        let spec = make_spec(5, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result =
+            handle_scheduling("job-no-nodes", "default", &spec, None, &backend, &ctx).await;
+        assert!(result.is_ok(), "no-placement should not be an error");
+    }
+
+    #[tokio::test]
+    async fn test_handle_scheduling_reaper_no_user_fails() {
+        // Reaper backend without user identity -> must transition to Failed (Ok(())).
+        let spec = make_spec(1, ExecutionBackendType::Reaper, None);
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result =
+            handle_scheduling("job-reaper-nouser", "default", &spec, None, &backend, &ctx).await;
+        assert!(result.is_ok(), "rejection should be Ok(()), not Err");
+        assert!(!cleanup_called(&backend));
+        assert!(!terminate_called(&backend));
+    }
+
+    #[tokio::test]
+    async fn test_handle_scheduling_reaper_with_user_ok() {
+        // Reaper backend with a valid user identity proceeds to launch.
+        let spec = make_spec(1, ExecutionBackendType::Reaper, None);
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let user = UserIdentity {
+            username: "alice".to_string(),
+            uid: 1001,
+            gid: 1001,
+            supplemental_groups: vec![],
+            home_dir: None,
+            default_project: None,
+        };
+        let result = handle_scheduling(
+            "job-reaper-user",
+            "default",
+            &spec,
+            Some(&user),
+            &backend,
+            &ctx,
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_scheduling_launch_failure_releases_allocations() {
+        // When backend.launch() returns an error, the scheduler must release
+        // the cluster allocations and transition the job to Failed.
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_launch_err(WrenError::ValidationError {
+            reason: "simulated launch failure".to_string(),
+        });
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result =
+            handle_scheduling("job-fail-launch", "default", &spec, None, &backend, &ctx).await;
+        assert!(result.is_ok(), "launch failure should be handled, not propagated");
+        // Allocations should have been released
+        let cluster = ctx.cluster_state.read().await;
+        for node in &cluster.nodes {
+            let alloc = cluster.allocations.get(&node.name);
+            let job_count = alloc.map(|a| a.jobs.len()).unwrap_or(0);
+            assert_eq!(
+                job_count, 0,
+                "allocations for node {} should be released after launch failure",
+                node.name
+            );
+        }
+    }
+
+    // --- handle_running tests ---
+
+    #[tokio::test]
+    async fn test_handle_running_succeeded() {
+        // Backend reports Succeeded -> job should transition (no error).
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let status = WrenJobStatus {
+            start_time: Some(chrono::Utc::now().to_rfc3339()),
+            ..Default::default()
+        };
+        let result = handle_running("job-done", "default", &spec, &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_running_failed() {
+        // Backend reports Failed -> job transitions to Failed.
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Failed {
+            message: "OOM killed".to_string(),
+        });
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let status = WrenJobStatus {
+            start_time: Some(chrono::Utc::now().to_rfc3339()),
+            ..Default::default()
+        };
+        let result = handle_running("job-oom", "default", &spec, &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_running_walltime_exceeded() {
+        // Running job whose start_time is in the past and walltime has expired
+        // -> terminate must be called and status updated.
+        let mut spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        spec.walltime = Some("1s".to_string());
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let old_start = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        let status = WrenJobStatus {
+            start_time: Some(old_start),
+            ..Default::default()
+        };
+        let result =
+            handle_running("job-walltime", "default", &spec, &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+        assert!(
+            terminate_called(&backend),
+            "terminate must be called when walltime is exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_running_launching_updates_ready_workers() {
+        // Backend reports Launching -> status patch for readyWorkers (no error).
+        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Launching { ready: 1, total: 2 });
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let status = WrenJobStatus::default();
+        let result =
+            handle_running("job-launching", "default", &spec, &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_running_not_found() {
+        // Backend reports NotFound -> job must be transitioned to Failed.
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::NotFound);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let status = WrenJobStatus::default();
+        let result =
+            handle_running("job-notfound", "default", &spec, &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    // --- handle_terminal tests ---
+
+    #[tokio::test]
+    async fn test_handle_terminal_cleans_up_resources() {
+        // Terminal state must call cleanup() on the backend.
+        let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
+        let mut cluster = make_cluster_with_nodes(2);
+        cluster.allocate("node-0", 1000, 1_000_000_000, 0, "job-term");
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            cluster,
+        );
+        let status = WrenJobStatus {
+            completion_time: Some(chrono::Utc::now().to_rfc3339()),
+            ..Default::default()
+        };
+        let result = handle_terminal("job-term", "default", &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+        assert!(cleanup_called(&backend), "cleanup() must be called in terminal state");
+        let cluster = ctx.cluster_state.read().await;
+        let alloc = cluster.allocations.get("node-0");
+        let has_job = alloc
+            .map(|a| a.jobs.contains(&"job-term".to_string()))
+            .unwrap_or(false);
+        assert!(!has_job, "job allocation should be released after terminal cleanup");
+    }
+
+    #[tokio::test]
+    async fn test_handle_terminal_ttl_expired_calls_terminate() {
+        // When TTL has expired, terminate() must be called to delete pods.
+        let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let old = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+        let status = WrenJobStatus {
+            completion_time: Some(old),
+            ..Default::default()
+        };
+        let result = handle_terminal("job-ttl", "default", &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+        assert!(
+            terminate_called(&backend),
+            "terminate() must be called when pod TTL has expired"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_terminal_no_ttl_does_not_call_terminate() {
+        // When TTL has NOT expired, terminate() must NOT be called.
+        let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let status = WrenJobStatus {
+            completion_time: Some(chrono::Utc::now().to_rfc3339()),
+            ..Default::default()
+        };
+        let result = handle_terminal("job-no-ttl", "default", &status, &backend, &ctx).await;
+        assert!(result.is_ok());
+        assert!(
+            !terminate_called(&backend),
+            "terminate() must NOT be called when TTL has not expired"
+        );
+    }
+
+    // --- reconcile() dispatch tests ---
+
+    #[tokio::test]
+    async fn test_reconcile_dispatches_pending_state() {
+        // A Pending job goes through handle_pending (validation + ID allocation).
+        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let job = make_wrenjob("job-pending", JobState::Pending, spec);
+        let result = reconcile(&job, &ctx).await;
+        assert!(result.is_ok(), "reconcile of Pending job should not error: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_dispatches_running_state() {
+        // A Running job goes through handle_running (status check).
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let job = make_wrenjob("job-running", JobState::Running, spec);
+        let result = reconcile(&job, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_dispatches_terminal_state() {
+        // A Succeeded job goes through handle_terminal (cleanup).
+        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(1),
+        );
+        let job = make_wrenjob("job-succeeded", JobState::Succeeded, spec);
+        let result = reconcile(&job, &ctx).await;
+        assert!(result.is_ok());
+        assert!(cleanup_called(&backend), "cleanup should be called for terminal state");
+    }
+
+    // --- cleanup_stale_allocations tests ---
+
+    #[tokio::test]
+    async fn test_cleanup_stale_allocations_removes_deleted_jobs() {
+        // When the K8s API returns 404 for a job that has allocations,
+        // cleanup_stale_allocations must release those allocations.
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let mut cluster = make_cluster_with_nodes(2);
+        cluster.allocate("node-0", 1000, 1_000_000_000, 0, "ghost-job");
+        let ctx = make_ctx(
+            make_job_not_found_client("ghost-job"),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            cluster,
+        );
+        cleanup_stale_allocations("default", &ctx).await;
+        let cluster = ctx.cluster_state.read().await;
+        let alloc = cluster.allocations.get("node-0");
+        let has_job = alloc
+            .map(|a| a.jobs.contains(&"ghost-job".to_string()))
+            .unwrap_or(false);
+        assert!(
+            !has_job,
+            "ghost-job allocation should be removed when job no longer exists in API"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_allocations_keeps_existing_jobs() {
+        // When the K8s API returns 200 for a job with allocations,
+        // cleanup_stale_allocations must leave those allocations intact.
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let mut cluster = make_cluster_with_nodes(2);
+        cluster.allocate("node-0", 1000, 1_000_000_000, 0, "live-job");
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            cluster,
+        );
+        cleanup_stale_allocations("default", &ctx).await;
+        let cluster = ctx.cluster_state.read().await;
+        let alloc = cluster.allocations.get("node-0");
+        let has_job = alloc
+            .map(|a| a.jobs.contains(&"live-job".to_string()))
+            .unwrap_or(false);
+        assert!(has_job, "live-job allocation must be preserved when job still exists");
     }
 }

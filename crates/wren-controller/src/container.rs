@@ -1183,4 +1183,238 @@ mod tests {
         let sc = pod_spec.security_context.unwrap();
         assert!(sc.supplemental_groups.is_none());
     }
+
+    // =========================================================================
+    // Async tests for ContainerBackend ExecutionBackend trait impl
+    // =========================================================================
+
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use std::sync::{Arc, Mutex};
+    use tower::service_fn;
+
+    /// Build a ContainerBackend with a mock client that tracks HTTP calls.
+    /// The `router` closure maps `(method, path) -> (status, body)`.
+    #[allow(clippy::type_complexity)]
+    fn make_tracking_container(
+        router: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+    ) -> (ContainerBackend, Arc<Mutex<Vec<(String, String)>>>) {
+        let calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let calls_clone = calls.clone();
+        let router = Arc::new(router);
+        let svc = service_fn(move |req: http::Request<_>| {
+            let method = req.method().to_string();
+            let uri = req.uri().path().to_string();
+            calls_clone.lock().unwrap().push((method.clone(), uri.clone()));
+            let router = Arc::clone(&router);
+            async move {
+                let (status, body) = router(&method, &uri);
+                let resp = http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::from(Bytes::from(body)))
+                    .unwrap();
+                Ok::<_, std::convert::Infallible>(resp)
+            }
+        });
+        let client = Client::new(svc, "default");
+        (ContainerBackend::new(client), calls)
+    }
+
+    /// Default router for container backend tests: returns valid JSON for each resource type.
+    fn container_router(method: &str, path: &str) -> (u16, String) {
+        if method == "GET" && path.contains("pods") {
+            // Pod list with 2 running worker pods (must have role label for interpret_pod_status)
+            return (200, serde_json::json!({
+                "apiVersion": "v1", "kind": "PodList", "metadata": {},
+                "items": [
+                    {
+                        "metadata": {"name": "job-worker-0", "namespace": "default",
+                            "labels": {"wren.giar.dev/role": "worker"}},
+                        "spec": {"containers": []},
+                        "status": {"phase": "Running"}
+                    },
+                    {
+                        "metadata": {"name": "job-worker-1", "namespace": "default",
+                            "labels": {"wren.giar.dev/role": "worker"}},
+                        "spec": {"containers": []},
+                        "status": {"phase": "Running"}
+                    }
+                ]
+            }).to_string());
+        }
+        // POST (create) — return a minimal object with metadata.name
+        if method == "POST" {
+            return (201, serde_json::json!({
+                "metadata": {"name": "created-resource", "namespace": "default"},
+                "spec": {}
+            }).to_string());
+        }
+        // DELETE — return a status OK
+        if method == "DELETE" {
+            return (200, serde_json::json!({
+                "apiVersion": "v1", "kind": "Status", "status": "Success"
+            }).to_string());
+        }
+        (200, r#"{"metadata":{}}"#.to_string())
+    }
+
+    fn make_n_placement(n: usize) -> Placement {
+        Placement {
+            nodes: (0..n).map(|i| format!("node-{}", i)).collect(),
+            score: 1.0,
+        }
+    }
+
+    // --- launch() tests ---
+
+    #[tokio::test]
+    async fn test_launch_mpi_job_creates_all_resources() {
+        let (backend, calls) = make_tracking_container(container_router);
+        let spec = make_spec_with_mpi();
+        let placement = make_n_placement(2);
+        let result = backend.launch("mpi-job", "default", &spec, &placement, None).await;
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert!(!launch.resource_ids.is_empty());
+        // Should create: 1 service + 1 configmap + 2 workers + 1 launcher = 5 POSTs
+        let calls = calls.lock().unwrap();
+        let post_count = calls.iter().filter(|(m, _)| m == "POST").count();
+        assert_eq!(post_count, 5, "MPI job should create svc + cm + 2 workers + launcher");
+    }
+
+    #[tokio::test]
+    async fn test_launch_simple_job_no_launcher() {
+        let (backend, calls) = make_tracking_container(container_router);
+        let spec = make_spec_no_mpi();
+        let placement = make_n_placement(2);
+        let result = backend.launch("simple-job", "default", &spec, &placement, None).await;
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert_eq!(launch.resource_ids.len(), 2, "simple job: 1 pod per node, no launcher");
+        let calls = calls.lock().unwrap();
+        let post_count = calls.iter().filter(|(m, _)| m == "POST").count();
+        assert_eq!(post_count, 2, "simple job should only create worker pods");
+    }
+
+    #[tokio::test]
+    async fn test_launch_with_user_identity() {
+        let (backend, _calls) = make_tracking_container(container_router);
+        let spec = make_spec_no_mpi();
+        let placement = make_n_placement(1);
+        let user = UserIdentity {
+            username: "alice".to_string(),
+            uid: 1001, gid: 1001,
+            supplemental_groups: vec![2000],
+            home_dir: Some("/home/alice".to_string()),
+            default_project: None,
+        };
+        let result = backend.launch("user-job", "default", &spec, &placement, Some(&user)).await;
+        assert!(result.is_ok(), "launch with user identity should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_launch_tolerates_409_conflict() {
+        // All POST requests return 409 (AlreadyExists) — should be tolerated
+        let (backend, _) = make_tracking_container(|method, _path| {
+            if method == "POST" {
+                (409, serde_json::json!({
+                    "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                    "reason": "AlreadyExists", "code": 409,
+                    "message": "already exists"
+                }).to_string())
+            } else {
+                container_router(method, _path)
+            }
+        });
+        let spec = make_spec_no_mpi();
+        let placement = make_n_placement(2);
+        let result = backend.launch("conflict-job", "default", &spec, &placement, None).await;
+        assert!(result.is_ok(), "409 on create should be tolerated");
+    }
+
+    #[tokio::test]
+    async fn test_launch_returns_resource_ids() {
+        let (backend, _) = make_tracking_container(container_router);
+        let spec = make_spec_with_mpi();
+        let placement = make_n_placement(3);
+        let launch = backend.launch("id-job", "default", &spec, &placement, None).await.unwrap();
+        // 3 workers + 1 launcher = 4 resource IDs
+        assert_eq!(launch.resource_ids.len(), 4);
+    }
+
+    // --- status() tests ---
+
+    #[tokio::test]
+    async fn test_status_all_pods_running() {
+        let (backend, _) = make_tracking_container(container_router);
+        let status = backend.status("test-job", "default").await.unwrap();
+        assert_eq!(status, BackendJobStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn test_status_no_pods_found() {
+        let (backend, _) = make_tracking_container(|method, path| {
+            if method == "GET" && path.contains("pods") {
+                (200, serde_json::json!({
+                    "apiVersion": "v1", "kind": "PodList", "metadata": {}, "items": []
+                }).to_string())
+            } else {
+                container_router(method, path)
+            }
+        });
+        let status = backend.status("ghost-job", "default").await.unwrap();
+        assert_eq!(status, BackendJobStatus::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_status_some_pods_pending() {
+        let (backend, _) = make_tracking_container(|method, path| {
+            if method == "GET" && path.contains("pods") {
+                (200, serde_json::json!({
+                    "apiVersion": "v1", "kind": "PodList", "metadata": {},
+                    "items": [
+                        {"metadata": {"name": "w-0", "labels": {"wren.giar.dev/role": "worker"}}, "spec": {"containers": []}, "status": {"phase": "Running"}},
+                        {"metadata": {"name": "w-1", "labels": {"wren.giar.dev/role": "worker"}}, "spec": {"containers": []}, "status": {"phase": "Pending"}}
+                    ]
+                }).to_string())
+            } else {
+                container_router(method, path)
+            }
+        });
+        let status = backend.status("mixed-job", "default").await.unwrap();
+        // interpret_pod_status (no-launcher mode): any running worker → Running
+        assert_eq!(status, BackendJobStatus::Running);
+    }
+
+    // --- terminate() tests ---
+
+    #[tokio::test]
+    async fn test_terminate_deletes_pods() {
+        let (backend, calls) = make_tracking_container(container_router);
+        let result = backend.terminate("term-job", "default").await;
+        assert!(result.is_ok());
+        let calls = calls.lock().unwrap();
+        // 1 GET (list pods) + 2 DELETE (one per pod from the default list)
+        assert!(calls.iter().any(|(m, _)| m == "GET"), "should list pods");
+        let delete_count = calls.iter().filter(|(m, _)| m == "DELETE").count();
+        assert_eq!(delete_count, 2, "should delete each pod individually");
+    }
+
+    // --- cleanup() tests ---
+
+    #[tokio::test]
+    async fn test_cleanup_deletes_service_and_configmap() {
+        let (backend, calls) = make_tracking_container(container_router);
+        let result = backend.cleanup("clean-job", "default").await;
+        assert!(result.is_ok());
+        let calls = calls.lock().unwrap();
+        let delete_count = calls.iter().filter(|(m, _)| m == "DELETE").count();
+        assert_eq!(delete_count, 2, "should delete service + configmap (not pods)");
+        // Verify no pods were deleted (no GET for pod listing)
+        assert!(
+            !calls.iter().any(|(m, p)| m == "GET" && p.contains("pods")),
+            "cleanup should not touch pods"
+        );
+    }
 }

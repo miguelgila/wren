@@ -1375,4 +1375,238 @@ mod tests {
 
         assert_eq!(env["CUSTOM_VAR"], "custom_value");
     }
+
+    // =========================================================================
+    // Async tests for ReaperBackend ExecutionBackend trait impl
+    // =========================================================================
+
+    use std::sync::{Arc, Mutex};
+
+    /// Build a ReaperBackend with a tracking mock client.
+    /// The `router` maps `(method, path) -> (status, body)`.
+    #[allow(clippy::type_complexity)]
+    fn make_tracking_reaper(
+        router: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+    ) -> (ReaperBackend, Arc<Mutex<Vec<(String, String)>>>) {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use tower::service_fn;
+
+        let calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let calls_clone = calls.clone();
+        let router = Arc::new(router);
+        let svc = service_fn(move |req: http::Request<_>| {
+            let method = req.method().to_string();
+            let uri = req.uri().path().to_string();
+            calls_clone.lock().unwrap().push((method.clone(), uri.clone()));
+            let router = Arc::clone(&router);
+            async move {
+                let (status, body) = router(&method, &uri);
+                let resp = http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::from(Bytes::from(body)))
+                    .unwrap();
+                Ok::<_, std::convert::Infallible>(resp)
+            }
+        });
+        let client = Client::new(svc, "default");
+        (ReaperBackend::new(client), calls)
+    }
+
+    /// Default router for reaper backend tests.
+    fn reaper_router(method: &str, path: &str) -> (u16, String) {
+        // GET on reaperpods (single object) — return a running ReaperPod
+        if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
+            return (200, serde_json::json!({
+                "apiVersion": "reaper.io/v1alpha1",
+                "kind": "ReaperPod",
+                "metadata": {"name": "test-rank-0", "namespace": "default"},
+                "status": {"phase": "Running"}
+            }).to_string());
+        }
+        // POST (create) — return appropriate object based on path
+        if method == "POST" {
+            if path.contains("configmaps") {
+                return (201, serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "ConfigMap",
+                    "metadata": {"name": "created-configmap", "namespace": "default"},
+                    "data": {}
+                }).to_string());
+            }
+            return (201, serde_json::json!({
+                "apiVersion": "reaper.io/v1alpha1",
+                "kind": "ReaperPod",
+                "metadata": {"name": "created-reaperpod", "namespace": "default"}
+            }).to_string());
+        }
+        // DELETE — return success
+        if method == "DELETE" {
+            return (200, serde_json::json!({
+                "apiVersion": "v1", "kind": "Status", "status": "Success"
+            }).to_string());
+        }
+        (200, r#"{"metadata":{}}"#.to_string())
+    }
+
+    // --- launch() tests ---
+
+    #[tokio::test]
+    async fn test_launch_creates_reaper_pods_for_each_rank() {
+        let (backend, calls) = make_tracking_reaper(reaper_router);
+        let spec = make_spec(3);
+        let placement = make_placement(3);
+        let user = make_user();
+        let result = backend.launch("rjob", "default", &spec, &placement, Some(&user)).await;
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert_eq!(launch.resource_ids.len(), 3);
+        let calls = calls.lock().unwrap();
+        let post_count = calls.iter().filter(|(m, _)| m == "POST").count();
+        // 3 ReaperPods (no hostfile because no MPI spec)
+        assert_eq!(post_count, 3, "should create 3 ReaperPods");
+    }
+
+    #[tokio::test]
+    async fn test_launch_creates_hostfile_for_mpi_job() {
+        let (backend, calls) = make_tracking_reaper(reaper_router);
+        let mut spec = make_spec(2);
+        spec.mpi = Some(MPISpec {
+            implementation: "openmpi".to_string(),
+            ssh_auth: true,
+            fabric_interface: None,
+        });
+        let placement = make_placement(2);
+        let result = backend.launch("mpi-rjob", "default", &spec, &placement, None).await;
+        assert!(result.is_ok(), "launch failed: {:?}", result.err());
+        let calls = calls.lock().unwrap();
+        let post_count = calls.iter().filter(|(m, _)| m == "POST").count();
+        // 1 hostfile ConfigMap + 2 ReaperPods = 3 POSTs
+        assert_eq!(post_count, 3, "MPI job should create hostfile + 2 ReaperPods");
+        assert!(
+            calls.iter().any(|(m, p)| m == "POST" && p.contains("configmaps")),
+            "should create hostfile ConfigMap"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_launch_returns_resource_ids() {
+        let (backend, _) = make_tracking_reaper(reaper_router);
+        let spec = make_spec(4);
+        let placement = make_placement(4);
+        let launch = backend.launch("id-rjob", "default", &spec, &placement, None).await.unwrap();
+        assert_eq!(launch.resource_ids.len(), 4);
+        assert_eq!(launch.resource_ids[0], "id-rjob-rank-0");
+        assert_eq!(launch.resource_ids[3], "id-rjob-rank-3");
+    }
+
+    #[tokio::test]
+    async fn test_launch_tolerates_409_on_reaperpod() {
+        let (backend, _) = make_tracking_reaper(|method, path| {
+            if method == "POST" && path.contains("reaperpods") {
+                (409, serde_json::json!({
+                    "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                    "reason": "AlreadyExists", "code": 409,
+                    "message": "reaperpods already exists"
+                }).to_string())
+            } else {
+                reaper_router(method, path)
+            }
+        });
+        let spec = make_spec(2);
+        let placement = make_placement(2);
+        let result = backend.launch("conflict-rjob", "default", &spec, &placement, None).await;
+        assert!(result.is_ok(), "409 on ReaperPod create should be tolerated");
+    }
+
+    // --- status() tests ---
+
+    #[tokio::test]
+    async fn test_status_running() {
+        let (backend, _) = make_tracking_reaper(reaper_router);
+        let status = backend.status("test-job", "default").await.unwrap();
+        assert_eq!(status, BackendJobStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn test_status_succeeded() {
+        let (backend, _) = make_tracking_reaper(|method, path| {
+            if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
+                (200, serde_json::json!({
+                    "apiVersion": "reaper.io/v1alpha1", "kind": "ReaperPod",
+                    "metadata": {"name": "test-rank-0"},
+                    "status": {"phase": "Succeeded", "exitCode": 0}
+                }).to_string())
+            } else {
+                reaper_router(method, path)
+            }
+        });
+        let status = backend.status("done-job", "default").await.unwrap();
+        assert_eq!(status, BackendJobStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn test_status_failed() {
+        let (backend, _) = make_tracking_reaper(|method, path| {
+            if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
+                (200, serde_json::json!({
+                    "apiVersion": "reaper.io/v1alpha1", "kind": "ReaperPod",
+                    "metadata": {"name": "test-rank-0"},
+                    "status": {"phase": "Failed", "exitCode": 1, "message": "OOM"}
+                }).to_string())
+            } else {
+                reaper_router(method, path)
+            }
+        });
+        let status = backend.status("fail-job", "default").await.unwrap();
+        assert_eq!(status, BackendJobStatus::Failed { message: "OOM".to_string() });
+    }
+
+    #[tokio::test]
+    async fn test_status_not_found() {
+        let (backend, _) = make_tracking_reaper(|method, path| {
+            if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
+                (404, serde_json::json!({
+                    "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                    "reason": "NotFound", "code": 404
+                }).to_string())
+            } else {
+                reaper_router(method, path)
+            }
+        });
+        let status = backend.status("ghost-job", "default").await.unwrap();
+        assert_eq!(status, BackendJobStatus::NotFound);
+    }
+
+    // --- terminate() tests ---
+
+    #[tokio::test]
+    async fn test_terminate_deletes_reaperpods() {
+        let (backend, calls) = make_tracking_reaper(reaper_router);
+        let result = backend.terminate("term-rjob", "default").await;
+        assert!(result.is_ok());
+        let calls = calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|(m, _)| m == "DELETE"),
+            "terminate should issue DELETE for ReaperPods"
+        );
+    }
+
+    // --- cleanup() tests ---
+
+    #[tokio::test]
+    async fn test_cleanup_deletes_pods_and_configmap() {
+        let (backend, calls) = make_tracking_reaper(reaper_router);
+        let result = backend.cleanup("clean-rjob", "default").await;
+        assert!(result.is_ok());
+        let calls = calls.lock().unwrap();
+        let delete_count = calls.iter().filter(|(m, _)| m == "DELETE").count();
+        // cleanup calls terminate (1 DELETE for collection) + delete configmap (1 DELETE)
+        assert!(delete_count >= 2, "cleanup should delete ReaperPods + ConfigMap, got {}", delete_count);
+        assert!(
+            calls.iter().any(|(m, p)| m == "DELETE" && p.contains("configmaps")),
+            "cleanup should delete hostfile ConfigMap"
+        );
+    }
 }
