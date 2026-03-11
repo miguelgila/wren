@@ -90,7 +90,7 @@ jobs:
           max_attempts: 2
           command: >-
             ${{ matrix.suite == 'examples'
-              && './scripts/test-examples.sh --skip-cluster'
+              && './scripts/test-examples.sh'
               || format('SKIP_BUILD=1 TESTS={0} ./scripts/run-integration-tests.sh', matrix.suite) }}
       - name: Upload integration logs
         if: always()
