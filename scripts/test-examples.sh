@@ -70,6 +70,13 @@ fi
 # Cluster setup
 # ---------------------------------------------------------------------------
 setup_cluster() {
+  # Delete any existing cluster to ensure clean state (e.g. on CI retry)
+  if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
+    info "Deleting existing Kind cluster: ${CLUSTER_NAME}"
+    kind delete cluster --name "${CLUSTER_NAME}" 2>/dev/null || true
+    rm -f "${KUBECONFIG}"
+  fi
+
   info "Creating Kind cluster: ${CLUSTER_NAME}"
 
   local kind_config
@@ -117,6 +124,9 @@ EOF
   else
     echo -e "${YELLOW}[WARN]${RESET} ReaperPod CRD not found at ${reaper_crd} — reaper backend tests may behave differently"
   fi
+
+  info "Creating wren-system namespace"
+  kubectl create namespace wren-system 2>/dev/null || true
 
   info "Installing RBAC"
   kubectl apply -f "${REPO_ROOT}/manifests/rbac/rbac.yaml"
