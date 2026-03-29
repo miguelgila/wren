@@ -259,7 +259,7 @@ impl ReaperBackend {
         );
 
         Ok(json!({
-            "apiVersion": "reaper.io/v1alpha1",
+            "apiVersion": "reaper.giar.dev/v1alpha1",
             "kind": "ReaperPod",
             "metadata": {
                 "name": pod_name,
@@ -320,9 +320,9 @@ impl ReaperBackend {
         namespace: &str,
     ) -> Result<Option<ReaperPodStatus>, WrenError> {
         let api_resource = kube::api::ApiResource {
-            group: "reaper.io".to_string(),
+            group: "reaper.giar.dev".to_string(),
             version: "v1alpha1".to_string(),
-            api_version: "reaper.io/v1alpha1".to_string(),
+            api_version: "reaper.giar.dev/v1alpha1".to_string(),
             kind: "ReaperPod".to_string(),
             plural: "reaperpods".to_string(),
         };
@@ -367,9 +367,9 @@ impl ExecutionBackend for ReaperBackend {
 
         // 2. Create a ReaperPod for each rank
         let api_resource = kube::api::ApiResource {
-            group: "reaper.io".to_string(),
+            group: "reaper.giar.dev".to_string(),
             version: "v1alpha1".to_string(),
-            api_version: "reaper.io/v1alpha1".to_string(),
+            api_version: "reaper.giar.dev/v1alpha1".to_string(),
             kind: "ReaperPod".to_string(),
             plural: "reaperpods".to_string(),
         };
@@ -431,9 +431,9 @@ impl ExecutionBackend for ReaperBackend {
 
     async fn terminate(&self, job_name: &str, namespace: &str) -> Result<(), WrenError> {
         let api_resource = kube::api::ApiResource {
-            group: "reaper.io".to_string(),
+            group: "reaper.giar.dev".to_string(),
             version: "v1alpha1".to_string(),
-            api_version: "reaper.io/v1alpha1".to_string(),
+            api_version: "reaper.giar.dev/v1alpha1".to_string(),
             kind: "ReaperPod".to_string(),
             plural: "reaperpods".to_string(),
         };
@@ -677,7 +677,7 @@ mod tests {
             .build_reaper_pod("myjob", "default", &spec, &placement, 0, "node-0", None)
             .unwrap();
 
-        assert_eq!(pod["apiVersion"], "reaper.io/v1alpha1");
+        assert_eq!(pod["apiVersion"], "reaper.giar.dev/v1alpha1");
         assert_eq!(pod["kind"], "ReaperPod");
     }
 
@@ -1419,7 +1419,7 @@ mod tests {
         // GET on reaperpods (single object) — return a running ReaperPod
         if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
             return (200, serde_json::json!({
-                "apiVersion": "reaper.io/v1alpha1",
+                "apiVersion": "reaper.giar.dev/v1alpha1",
                 "kind": "ReaperPod",
                 "metadata": {"name": "test-rank-0", "namespace": "default"},
                 "status": {"phase": "Running"}
@@ -1436,7 +1436,7 @@ mod tests {
                 }).to_string());
             }
             return (201, serde_json::json!({
-                "apiVersion": "reaper.io/v1alpha1",
+                "apiVersion": "reaper.giar.dev/v1alpha1",
                 "kind": "ReaperPod",
                 "metadata": {"name": "created-reaperpod", "namespace": "default"}
             }).to_string());
@@ -1534,7 +1534,7 @@ mod tests {
         let (backend, _) = make_tracking_reaper(|method, path| {
             if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
                 (200, serde_json::json!({
-                    "apiVersion": "reaper.io/v1alpha1", "kind": "ReaperPod",
+                    "apiVersion": "reaper.giar.dev/v1alpha1", "kind": "ReaperPod",
                     "metadata": {"name": "test-rank-0"},
                     "status": {"phase": "Succeeded", "exitCode": 0}
                 }).to_string())
@@ -1551,7 +1551,7 @@ mod tests {
         let (backend, _) = make_tracking_reaper(|method, path| {
             if method == "GET" && path.contains("reaperpods") && !path.ends_with("reaperpods") {
                 (200, serde_json::json!({
-                    "apiVersion": "reaper.io/v1alpha1", "kind": "ReaperPod",
+                    "apiVersion": "reaper.giar.dev/v1alpha1", "kind": "ReaperPod",
                     "metadata": {"name": "test-rank-0"},
                     "status": {"phase": "Failed", "exitCode": 1, "message": "OOM"}
                 }).to_string())

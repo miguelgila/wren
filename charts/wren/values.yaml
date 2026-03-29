@@ -1,3 +1,8 @@
+# Reaper bare-metal execution backend (optional subchart)
+# Enable to deploy reaper alongside wren. Disable (default) for wren standalone.
+reaper:
+  enabled: false
+
 replicaCount: 1
 
 image:

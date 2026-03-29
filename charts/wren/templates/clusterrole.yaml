@@ -38,7 +38,7 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
   # ReaperPod CRD access (bare-metal execution backend)
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperpods", "reaperpods/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Events for status reporting

@@ -451,17 +451,28 @@ install_crds() {
         crd/wrenqueues.wren.giar.dev \
         --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
 
-    # Install ReaperPod CRD from sibling reaper project (needed for reaper backend tests)
-    local reaper_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.io.yaml"
-    if [[ -f "$reaper_crd" ]]; then
-        log "Applying ReaperPod CRD from reaper project"
+    # Install ReaperPod CRD (needed for reaper backend tests).
+    # Prefer the subchart CRD (from helm dependency update), fall back to sibling project.
+    local reaper_crd=""
+    local subchart_crd="${REPO_ROOT}/charts/wren/charts/reaper/crds/reaperpods.reaper.giar.dev.yaml"
+    local sibling_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml"
+
+    if [[ -f "$subchart_crd" ]]; then
+        reaper_crd="$subchart_crd"
+        log "Using ReaperPod CRD from reaper subchart"
+    elif [[ -f "$sibling_crd" ]]; then
+        reaper_crd="$sibling_crd"
+        log "Using ReaperPod CRD from sibling reaper project"
+    fi
+
+    if [[ -n "$reaper_crd" ]]; then
         kubectl apply -f "$reaper_crd"
         kubectl wait --for=condition=Established \
-            crd/reaperpods.reaper.io \
+            crd/reaperpods.reaper.giar.dev \
             --timeout=30s 2>/dev/null || warn "ReaperPod CRD not established"
         crd_count=$(( crd_count + 1 ))
     else
-        warn "ReaperPod CRD not found at ${reaper_crd} — reaper backend tests may fail"
+        warn "ReaperPod CRD not found (run 'helm dependency update charts/wren' or check sibling reaper project) — reaper backend tests may fail"
     fi
 
     success "CRDs installed (${crd_count} files)"

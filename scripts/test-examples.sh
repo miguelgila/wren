@@ -117,7 +117,7 @@ EOF
   info "Installing Wren CRDs"
   kubectl apply -f "${REPO_ROOT}/manifests/crds/"
 
-  local reaper_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.io.yaml"
+  local reaper_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml"
   if [[ -f "${reaper_crd}" ]]; then
     info "Installing ReaperPod CRD"
     kubectl apply -f "${reaper_crd}"

@@ -148,7 +148,7 @@ for rank in 0 1; do
   fi
 
   kubectl apply -f - <<YAML
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: pytorch-rank-${rank}
