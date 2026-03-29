@@ -6,6 +6,8 @@ apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: topology-aware-job
+  annotations:
+    wren.giar.dev/user: demo-user
 spec:
   nodes: 2
   walltime: "10m"

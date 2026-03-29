@@ -8,6 +8,8 @@ apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: preprocess
+  annotations:
+    wren.giar.dev/user: demo-user
 spec:
   nodes: 1
   walltime: "10m"
@@ -20,6 +22,8 @@ apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: train
+  annotations:
+    wren.giar.dev/user: demo-user
 spec:
   nodes: 2
   walltime: "1h"
@@ -35,6 +39,8 @@ apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: evaluate
+  annotations:
+    wren.giar.dev/user: demo-user
 spec:
   nodes: 1
   walltime: "15m"

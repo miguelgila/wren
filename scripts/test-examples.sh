@@ -173,6 +173,10 @@ else
   info "Skipping cluster creation (--skip-cluster)"
 fi
 
+# Create shared demo-user WrenUser for all examples
+info "Creating shared demo-user WrenUser"
+kubectl apply -f "${REPO_ROOT}/examples/common/user.yaml" 2>/dev/null
+
 # ---------------------------------------------------------------------------
 # Helper: wait for a WrenJob to reach the expected state
 # Returns 0 if state matched, 1 on timeout

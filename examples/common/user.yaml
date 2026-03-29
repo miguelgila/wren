@@ -1,0 +1,14 @@
+# Shared WrenUser for examples.
+# Every WrenJob requires a valid, non-root WrenUser identity.
+# In production, WrenUser CRDs are typically synced from LDAP/AD via a CronJob.
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: demo-user
+spec:
+  uid: 1000
+  gid: 1000
+  supplementalGroups:
+    - 1000
+  homeDir: "/home/demo-user"
+  defaultProject: "examples"
