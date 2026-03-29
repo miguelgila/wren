@@ -125,12 +125,10 @@ async fn handle_scheduling(
     backend: &Arc<dyn ExecutionBackend>,
     ctx: &ReconcilerContext,
 ) -> Result<(), WrenError> {
-    // Security: Reaper backend runs on the host without container isolation,
-    // so every Reaper job MUST have a resolved user identity to prevent running as root.
-    // Container backend has its own isolation (Pod Security Standards, securityContext)
-    // so user identity is optional — if present, it sets runAsUser/runAsGroup.
-    if user.is_none() && spec.backend == ExecutionBackendType::Reaper {
-        let reason = "no valid WrenUser identity resolved — Reaper jobs require a \
+    // Security: every job MUST have a resolved, non-root user identity.
+    // This prevents anonymous or root execution on both container and bare-metal backends.
+    if user.is_none() {
+        let reason = "no valid WrenUser identity resolved — every job requires a \
                        wren.giar.dev/user annotation pointing to an existing WrenUser with non-root uid";
         warn!(job = name, "rejecting job: {}", reason);
         update_status(name, namespace, JobState::Failed, Some(reason), ctx).await?;
@@ -1176,6 +1174,18 @@ mod tests {
         cluster
     }
 
+    /// Build a test UserIdentity for scheduling tests.
+    fn make_test_user() -> UserIdentity {
+        UserIdentity {
+            username: "testuser".to_string(),
+            uid: 1001,
+            gid: 1001,
+            supplemental_groups: vec![],
+            home_dir: None,
+            default_project: None,
+        }
+    }
+
     /// Build a ReconcilerContext with the given client and backends.
     fn make_ctx(
         client: Client,
@@ -1289,7 +1299,9 @@ mod tests {
             Arc::clone(&backend),
             make_cluster_with_nodes(2),
         );
-        let result = handle_scheduling("job-ok", "default", &spec, None, &backend, &ctx).await;
+        let user = make_test_user();
+        let result =
+            handle_scheduling("job-ok", "default", &spec, Some(&user), &backend, &ctx).await;
         assert!(result.is_ok());
     }
 
@@ -1309,14 +1321,22 @@ mod tests {
             Arc::clone(&backend),
             make_cluster_with_nodes(2),
         );
-        let result =
-            handle_scheduling("job-no-nodes", "default", &spec, None, &backend, &ctx).await;
+        let user = make_test_user();
+        let result = handle_scheduling(
+            "job-no-nodes",
+            "default",
+            &spec,
+            Some(&user),
+            &backend,
+            &ctx,
+        )
+        .await;
         assert!(result.is_ok(), "no-placement should not be an error");
     }
 
     #[tokio::test]
-    async fn test_handle_scheduling_reaper_no_user_fails() {
-        // Reaper backend without user identity -> must transition to Failed (Ok(())).
+    async fn test_handle_scheduling_no_user_fails() {
+        // Any backend without user identity -> must transition to Failed (Ok(())).
         let spec = make_spec(1, ExecutionBackendType::Reaper, None);
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
@@ -1333,6 +1353,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_scheduling_container_no_user_fails() {
+        // Container backend without user identity -> must also be rejected.
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
+        let backend = MockBackend::new_ok(BackendJobStatus::Running);
+        let ctx = make_ctx(
+            make_ok_client(),
+            Arc::clone(&backend),
+            Arc::clone(&backend),
+            make_cluster_with_nodes(2),
+        );
+        let result = handle_scheduling(
+            "job-container-nouser",
+            "default",
+            &spec,
+            None,
+            &backend,
+            &ctx,
+        )
+        .await;
+        assert!(result.is_ok(), "rejection should be Ok(()), not Err");
+        assert!(!cleanup_called(&backend));
+        assert!(!terminate_called(&backend));
+    }
+
+    #[tokio::test]
     async fn test_handle_scheduling_reaper_with_user_ok() {
         // Reaper backend with a valid user identity proceeds to launch.
         let spec = make_spec(1, ExecutionBackendType::Reaper, None);
@@ -1343,14 +1392,7 @@ mod tests {
             Arc::clone(&backend),
             make_cluster_with_nodes(2),
         );
-        let user = UserIdentity {
-            username: "alice".to_string(),
-            uid: 1001,
-            gid: 1001,
-            supplemental_groups: vec![],
-            home_dir: None,
-            default_project: None,
-        };
+        let user = make_test_user();
         let result = handle_scheduling(
             "job-reaper-user",
             "default",
@@ -1381,8 +1423,16 @@ mod tests {
             Arc::clone(&backend),
             make_cluster_with_nodes(2),
         );
-        let result =
-            handle_scheduling("job-fail-launch", "default", &spec, None, &backend, &ctx).await;
+        let user = make_test_user();
+        let result = handle_scheduling(
+            "job-fail-launch",
+            "default",
+            &spec,
+            Some(&user),
+            &backend,
+            &ctx,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "launch failure should be handled, not propagated"
