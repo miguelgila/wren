@@ -1205,7 +1205,10 @@ mod tests {
         let svc = service_fn(move |req: http::Request<_>| {
             let method = req.method().to_string();
             let uri = req.uri().path().to_string();
-            calls_clone.lock().unwrap().push((method.clone(), uri.clone()));
+            calls_clone
+                .lock()
+                .unwrap()
+                .push((method.clone(), uri.clone()));
             let router = Arc::clone(&router);
             async move {
                 let (status, body) = router(&method, &uri);
@@ -1225,36 +1228,48 @@ mod tests {
     fn container_router(method: &str, path: &str) -> (u16, String) {
         if method == "GET" && path.contains("pods") {
             // Pod list with 2 running worker pods (must have role label for interpret_pod_status)
-            return (200, serde_json::json!({
-                "apiVersion": "v1", "kind": "PodList", "metadata": {},
-                "items": [
-                    {
-                        "metadata": {"name": "job-worker-0", "namespace": "default",
-                            "labels": {"wren.giar.dev/role": "worker"}},
-                        "spec": {"containers": []},
-                        "status": {"phase": "Running"}
-                    },
-                    {
-                        "metadata": {"name": "job-worker-1", "namespace": "default",
-                            "labels": {"wren.giar.dev/role": "worker"}},
-                        "spec": {"containers": []},
-                        "status": {"phase": "Running"}
-                    }
-                ]
-            }).to_string());
+            return (
+                200,
+                serde_json::json!({
+                    "apiVersion": "v1", "kind": "PodList", "metadata": {},
+                    "items": [
+                        {
+                            "metadata": {"name": "job-worker-0", "namespace": "default",
+                                "labels": {"wren.giar.dev/role": "worker"}},
+                            "spec": {"containers": []},
+                            "status": {"phase": "Running"}
+                        },
+                        {
+                            "metadata": {"name": "job-worker-1", "namespace": "default",
+                                "labels": {"wren.giar.dev/role": "worker"}},
+                            "spec": {"containers": []},
+                            "status": {"phase": "Running"}
+                        }
+                    ]
+                })
+                .to_string(),
+            );
         }
         // POST (create) — return a minimal object with metadata.name
         if method == "POST" {
-            return (201, serde_json::json!({
-                "metadata": {"name": "created-resource", "namespace": "default"},
-                "spec": {}
-            }).to_string());
+            return (
+                201,
+                serde_json::json!({
+                    "metadata": {"name": "created-resource", "namespace": "default"},
+                    "spec": {}
+                })
+                .to_string(),
+            );
         }
         // DELETE — return a status OK
         if method == "DELETE" {
-            return (200, serde_json::json!({
-                "apiVersion": "v1", "kind": "Status", "status": "Success"
-            }).to_string());
+            return (
+                200,
+                serde_json::json!({
+                    "apiVersion": "v1", "kind": "Status", "status": "Success"
+                })
+                .to_string(),
+            );
         }
         (200, r#"{"metadata":{}}"#.to_string())
     }
@@ -1273,14 +1288,19 @@ mod tests {
         let (backend, calls) = make_tracking_container(container_router);
         let spec = make_spec_with_mpi();
         let placement = make_n_placement(2);
-        let result = backend.launch("mpi-job", "default", &spec, &placement, None).await;
+        let result = backend
+            .launch("mpi-job", "default", &spec, &placement, None)
+            .await;
         assert!(result.is_ok());
         let launch = result.unwrap();
         assert!(!launch.resource_ids.is_empty());
         // Should create: 1 service + 1 configmap + 2 workers + 1 launcher = 5 POSTs
         let calls = calls.lock().unwrap();
         let post_count = calls.iter().filter(|(m, _)| m == "POST").count();
-        assert_eq!(post_count, 5, "MPI job should create svc + cm + 2 workers + launcher");
+        assert_eq!(
+            post_count, 5,
+            "MPI job should create svc + cm + 2 workers + launcher"
+        );
     }
 
     #[tokio::test]
@@ -1288,10 +1308,16 @@ mod tests {
         let (backend, calls) = make_tracking_container(container_router);
         let spec = make_spec_no_mpi();
         let placement = make_n_placement(2);
-        let result = backend.launch("simple-job", "default", &spec, &placement, None).await;
+        let result = backend
+            .launch("simple-job", "default", &spec, &placement, None)
+            .await;
         assert!(result.is_ok());
         let launch = result.unwrap();
-        assert_eq!(launch.resource_ids.len(), 2, "simple job: 1 pod per node, no launcher");
+        assert_eq!(
+            launch.resource_ids.len(),
+            2,
+            "simple job: 1 pod per node, no launcher"
+        );
         let calls = calls.lock().unwrap();
         let post_count = calls.iter().filter(|(m, _)| m == "POST").count();
         assert_eq!(post_count, 2, "simple job should only create worker pods");
@@ -1304,12 +1330,15 @@ mod tests {
         let placement = make_n_placement(1);
         let user = UserIdentity {
             username: "alice".to_string(),
-            uid: 1001, gid: 1001,
+            uid: 1001,
+            gid: 1001,
             supplemental_groups: vec![2000],
             home_dir: Some("/home/alice".to_string()),
             default_project: None,
         };
-        let result = backend.launch("user-job", "default", &spec, &placement, Some(&user)).await;
+        let result = backend
+            .launch("user-job", "default", &spec, &placement, Some(&user))
+            .await;
         assert!(result.is_ok(), "launch with user identity should succeed");
     }
 
@@ -1318,18 +1347,24 @@ mod tests {
         // All POST requests return 409 (AlreadyExists) — should be tolerated
         let (backend, _) = make_tracking_container(|method, _path| {
             if method == "POST" {
-                (409, serde_json::json!({
-                    "kind": "Status", "apiVersion": "v1", "status": "Failure",
-                    "reason": "AlreadyExists", "code": 409,
-                    "message": "already exists"
-                }).to_string())
+                (
+                    409,
+                    serde_json::json!({
+                        "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                        "reason": "AlreadyExists", "code": 409,
+                        "message": "already exists"
+                    })
+                    .to_string(),
+                )
             } else {
                 container_router(method, _path)
             }
         });
         let spec = make_spec_no_mpi();
         let placement = make_n_placement(2);
-        let result = backend.launch("conflict-job", "default", &spec, &placement, None).await;
+        let result = backend
+            .launch("conflict-job", "default", &spec, &placement, None)
+            .await;
         assert!(result.is_ok(), "409 on create should be tolerated");
     }
 
@@ -1338,7 +1373,10 @@ mod tests {
         let (backend, _) = make_tracking_container(container_router);
         let spec = make_spec_with_mpi();
         let placement = make_n_placement(3);
-        let launch = backend.launch("id-job", "default", &spec, &placement, None).await.unwrap();
+        let launch = backend
+            .launch("id-job", "default", &spec, &placement, None)
+            .await
+            .unwrap();
         // 3 workers + 1 launcher = 4 resource IDs
         assert_eq!(launch.resource_ids.len(), 4);
     }
@@ -1356,9 +1394,13 @@ mod tests {
     async fn test_status_no_pods_found() {
         let (backend, _) = make_tracking_container(|method, path| {
             if method == "GET" && path.contains("pods") {
-                (200, serde_json::json!({
-                    "apiVersion": "v1", "kind": "PodList", "metadata": {}, "items": []
-                }).to_string())
+                (
+                    200,
+                    serde_json::json!({
+                        "apiVersion": "v1", "kind": "PodList", "metadata": {}, "items": []
+                    })
+                    .to_string(),
+                )
             } else {
                 container_router(method, path)
             }
@@ -1410,7 +1452,10 @@ mod tests {
         assert!(result.is_ok());
         let calls = calls.lock().unwrap();
         let delete_count = calls.iter().filter(|(m, _)| m == "DELETE").count();
-        assert_eq!(delete_count, 2, "should delete service + configmap (not pods)");
+        assert_eq!(
+            delete_count, 2,
+            "should delete service + configmap (not pods)"
+        );
         // Verify no pods were deleted (no GET for pod listing)
         assert!(
             !calls.iter().any(|(m, p)| m == "GET" && p.contains("pods")),

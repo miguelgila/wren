@@ -131,8 +131,7 @@ mod tests {
         get_body: &str,
         post_status: u16,
         post_body: &str,
-    ) -> (JobIdAllocator, Arc<Mutex<Vec<(String, String)>>>)
-    {
+    ) -> (JobIdAllocator, Arc<Mutex<Vec<(String, String)>>>) {
         use bytes::Bytes;
         use http_body_util::Full;
         use tower::service_fn;
@@ -269,8 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_counter_reads_existing_value() {
-        let (allocator, _) =
-            make_allocator_client(200, &configmap_json(100), 200, &created_json());
+        let (allocator, _) = make_allocator_client(200, &configmap_json(100), 200, &created_json());
         let id = allocator.allocate().await.unwrap();
         assert_eq!(id, 100);
     }
@@ -287,8 +285,7 @@ mod tests {
             "code": 409
         })
         .to_string();
-        let (allocator, _) =
-            make_allocator_client(404, &not_found_json(), 409, &conflict_body);
+        let (allocator, _) = make_allocator_client(404, &not_found_json(), 409, &conflict_body);
         let id = allocator.allocate().await.unwrap();
         assert_eq!(id, 1, "should still return 1 after tolerating 409");
     }

@@ -559,7 +559,9 @@ mod tests {
     use std::sync::Mutex;
     use tower::service_fn;
     use wren_core::backend::{BackendJobStatus, ExecutionBackend, LaunchResult};
-    use wren_core::{ClusterState, ContainerSpec, ExecutionBackendType, NodeAllocation, NodeResources};
+    use wren_core::{
+        ClusterState, ContainerSpec, ExecutionBackendType, NodeAllocation, NodeResources,
+    };
 
     fn make_spec(
         nodes: u32,
@@ -983,7 +985,6 @@ mod tests {
         assert!(should_cleanup_pods(&status));
     }
 
-
     // =========================================================================
     // Async tests for reconcile(), handle_pending(), handle_scheduling(),
     // handle_running(), handle_terminal(), cleanup_stale_allocations(),
@@ -1080,21 +1081,30 @@ mod tests {
     fn route_ok_response(method: &str, path: &str) -> (u16, Bytes) {
         // WrenUser lookups → 404 (no user by default)
         if path.contains("wrenusers") {
-            return (404, Bytes::from(
-                r#"{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}"#
-            ));
+            return (
+                404,
+                Bytes::from(
+                    r#"{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}"#,
+                ),
+            );
         }
         // ConfigMap operations (job-id counter)
         if path.contains("configmaps") {
-            return (200, Bytes::from(
-                r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"wren-job-id-counter","namespace":"default"},"data":{"next_job_id":"1"}}"#
-            ));
+            return (
+                200,
+                Bytes::from(
+                    r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"wren-job-id-counter","namespace":"default"},"data":{"next_job_id":"1"}}"#,
+                ),
+            );
         }
         // WrenJob status patches and gets
         if path.contains("wrenjobs") {
-            return (200, Bytes::from(
-                r#"{"apiVersion":"wren.giar.dev/v1alpha1","kind":"WrenJob","metadata":{"name":"test","namespace":"default"},"spec":{"queue":"default","priority":50,"nodes":1,"tasksPerNode":1,"backend":"container","container":{"image":"busybox","command":[],"args":[],"hostNetwork":false,"volumeMounts":[],"env":[]},"dependencies":[]}}"#
-            ));
+            return (
+                200,
+                Bytes::from(
+                    r#"{"apiVersion":"wren.giar.dev/v1alpha1","kind":"WrenJob","metadata":{"name":"test","namespace":"default"},"spec":{"queue":"default","priority":50,"nodes":1,"tasksPerNode":1,"backend":"container","container":{"image":"busybox","command":[],"args":[],"hostNetwork":false,"volumeMounts":[],"env":[]},"dependencies":[]}}"#,
+                ),
+            );
         }
         let _ = method; // suppress unused warning
         (200, Bytes::from(r#"{"metadata":{}}"#))
@@ -1125,14 +1135,16 @@ mod tests {
         let svc = service_fn(move |req: http::Request<_>| {
             let method = req.method().to_string();
             let path = req.uri().path().to_string();
-            let is_not_found = method == "GET"
-                && path.contains("wrenjobs")
-                && path.contains(target.as_str());
+            let is_not_found =
+                method == "GET" && path.contains("wrenjobs") && path.contains(target.as_str());
             async move {
                 let (status, body) = if is_not_found {
-                    (404u16, Bytes::from(
-                        r#"{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}"#
-                    ))
+                    (
+                        404u16,
+                        Bytes::from(
+                            r#"{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}"#,
+                        ),
+                    )
                 } else {
                     route_ok_response(&method, &path)
                 };
@@ -1204,7 +1216,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_pending_invalid_job_zero_nodes() {
         // A job with 0 nodes must transition directly to Failed (no Err return).
-        let spec = make_spec(0, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            0,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1236,7 +1252,11 @@ mod tests {
     async fn test_handle_pending_valid_job_transitions_to_scheduling() {
         // A valid container job must get through validate_job_spec and allocate
         // a job ID without returning an error.
-        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            2,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1245,7 +1265,11 @@ mod tests {
             make_cluster_with_nodes(2),
         );
         let result = handle_pending("job-valid", "default", &spec, &ctx).await;
-        assert!(result.is_ok(), "valid pending job should not error: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "valid pending job should not error: {:?}",
+            result
+        );
     }
 
     // --- handle_scheduling tests ---
@@ -1253,7 +1277,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_scheduling_successful_placement() {
         // 2-node job on a 2-node cluster -> launch succeeds.
-        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            2,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1269,7 +1297,11 @@ mod tests {
     async fn test_handle_scheduling_no_feasible_placement() {
         // Requesting 5 nodes on a 2-node cluster -- no placement found, stays
         // in Scheduling (function returns Ok without error).
-        let spec = make_spec(5, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            5,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1335,7 +1367,11 @@ mod tests {
     async fn test_handle_scheduling_launch_failure_releases_allocations() {
         // When backend.launch() returns an error, the scheduler must release
         // the cluster allocations and transition the job to Failed.
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_launch_err(WrenError::ValidationError {
             reason: "simulated launch failure".to_string(),
         });
@@ -1347,7 +1383,10 @@ mod tests {
         );
         let result =
             handle_scheduling("job-fail-launch", "default", &spec, None, &backend, &ctx).await;
-        assert!(result.is_ok(), "launch failure should be handled, not propagated");
+        assert!(
+            result.is_ok(),
+            "launch failure should be handled, not propagated"
+        );
         // Allocations should have been released
         let cluster = ctx.cluster_state.read().await;
         for node in &cluster.nodes {
@@ -1366,7 +1405,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_running_succeeded() {
         // Backend reports Succeeded -> job should transition (no error).
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1385,7 +1428,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_running_failed() {
         // Backend reports Failed -> job transitions to Failed.
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Failed {
             message: "OOM killed".to_string(),
         });
@@ -1407,7 +1454,11 @@ mod tests {
     async fn test_handle_running_walltime_exceeded() {
         // Running job whose start_time is in the past and walltime has expired
         // -> terminate must be called and status updated.
-        let mut spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let mut spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         spec.walltime = Some("1s".to_string());
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
@@ -1433,7 +1484,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_running_launching_updates_ready_workers() {
         // Backend reports Launching -> status patch for readyWorkers (no error).
-        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            2,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Launching { ready: 1, total: 2 });
         let ctx = make_ctx(
             make_ok_client(),
@@ -1450,7 +1505,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_running_not_found() {
         // Backend reports NotFound -> job must be transitioned to Failed.
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::NotFound);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1484,13 +1543,19 @@ mod tests {
         };
         let result = handle_terminal("job-term", "default", &status, &backend, &ctx).await;
         assert!(result.is_ok());
-        assert!(cleanup_called(&backend), "cleanup() must be called in terminal state");
+        assert!(
+            cleanup_called(&backend),
+            "cleanup() must be called in terminal state"
+        );
         let cluster = ctx.cluster_state.read().await;
         let alloc = cluster.allocations.get("node-0");
         let has_job = alloc
             .map(|a| a.jobs.contains(&"job-term".to_string()))
             .unwrap_or(false);
-        assert!(!has_job, "job allocation should be released after terminal cleanup");
+        assert!(
+            !has_job,
+            "job allocation should be released after terminal cleanup"
+        );
     }
 
     #[tokio::test]
@@ -1543,7 +1608,11 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_dispatches_pending_state() {
         // A Pending job goes through handle_pending (validation + ID allocation).
-        let spec = make_spec(2, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            2,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Running);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1553,13 +1622,21 @@ mod tests {
         );
         let job = make_wrenjob("job-pending", JobState::Pending, spec);
         let result = reconcile(&job, &ctx).await;
-        assert!(result.is_ok(), "reconcile of Pending job should not error: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "reconcile of Pending job should not error: {:?}",
+            result
+        );
     }
 
     #[tokio::test]
     async fn test_reconcile_dispatches_running_state() {
         // A Running job goes through handle_running (status check).
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1575,7 +1652,11 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_dispatches_terminal_state() {
         // A Succeeded job goes through handle_terminal (cleanup).
-        let spec = make_spec(1, ExecutionBackendType::Container, Some(make_container_spec()));
+        let spec = make_spec(
+            1,
+            ExecutionBackendType::Container,
+            Some(make_container_spec()),
+        );
         let backend = MockBackend::new_ok(BackendJobStatus::Succeeded);
         let ctx = make_ctx(
             make_ok_client(),
@@ -1586,7 +1667,10 @@ mod tests {
         let job = make_wrenjob("job-succeeded", JobState::Succeeded, spec);
         let result = reconcile(&job, &ctx).await;
         assert!(result.is_ok());
-        assert!(cleanup_called(&backend), "cleanup should be called for terminal state");
+        assert!(
+            cleanup_called(&backend),
+            "cleanup should be called for terminal state"
+        );
     }
 
     // --- cleanup_stale_allocations tests ---
@@ -1635,6 +1719,9 @@ mod tests {
         let has_job = alloc
             .map(|a| a.jobs.contains(&"live-job".to_string()))
             .unwrap_or(false);
-        assert!(has_job, "live-job allocation must be preserved when job still exists");
+        assert!(
+            has_job,
+            "live-job allocation must be preserved when job still exists"
+        );
     }
 }
