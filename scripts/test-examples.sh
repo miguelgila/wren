@@ -117,12 +117,19 @@ EOF
   info "Installing Wren CRDs"
   kubectl apply -f "${REPO_ROOT}/manifests/crds/"
 
-  local reaper_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml"
-  if [[ -f "${reaper_crd}" ]]; then
-    info "Installing ReaperPod CRD"
-    kubectl apply -f "${reaper_crd}"
+  REAPER_CRD_INSTALLED=false
+  local subchart_crd="${REPO_ROOT}/charts/wren/charts/reaper/crds/reaperpods.reaper.giar.dev.yaml"
+  local sibling_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml"
+  if [[ -f "${subchart_crd}" ]]; then
+    info "Installing ReaperPod CRD from reaper subchart"
+    kubectl apply -f "${subchart_crd}"
+    REAPER_CRD_INSTALLED=true
+  elif [[ -f "${sibling_crd}" ]]; then
+    info "Installing ReaperPod CRD from sibling reaper project"
+    kubectl apply -f "${sibling_crd}"
+    REAPER_CRD_INSTALLED=true
   else
-    echo -e "${YELLOW}[WARN]${RESET} ReaperPod CRD not found at ${reaper_crd} — reaper backend tests may behave differently"
+    echo -e "${YELLOW}[WARN]${RESET} ReaperPod CRD not found — skipping reaper backend examples"
   fi
 
   info "Creating wren-system namespace"
@@ -398,39 +405,49 @@ kubectl delete wrenjob preprocess train evaluate --ignore-not-found 2>/dev/null 
 # ---------------------------------------------------------------------------
 # Example 07 — Reaper Backend
 # ---------------------------------------------------------------------------
-info "Running: 07-reaper-backend"
-kubectl apply -f "${REPO_ROOT}/examples/07-reaper-backend/user.yaml" 2>/dev/null
-kubectl apply -f "${REPO_ROOT}/examples/07-reaper-backend/job.yaml" 2>/dev/null
+if [[ "${REAPER_CRD_INSTALLED}" == "true" ]]; then
+  info "Running: 07-reaper-backend"
+  kubectl apply -f "${REPO_ROOT}/examples/07-reaper-backend/user.yaml" 2>/dev/null
+  kubectl apply -f "${REPO_ROOT}/examples/07-reaper-backend/job.yaml" 2>/dev/null
 
-if wait_for_job_state "reaper-hello" "Scheduling" 30; then
-  pass "07-reaper-backend (Scheduling — expected, no Reaper runtime)"
-  PASS_COUNT=$((PASS_COUNT + 1))
+  if wait_for_job_state "reaper-hello" "Scheduling" 30; then
+    pass "07-reaper-backend (Scheduling — expected, no Reaper runtime)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    actual="$(kubectl get wrenjob reaper-hello -o jsonpath='{.status.state}' 2>/dev/null || echo unknown)"
+    fail "07-reaper-backend — job did not reach Scheduling within 30s (state: ${actual})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+
+  kubectl delete wrenjob reaper-hello --ignore-not-found 2>/dev/null || true
 else
-  actual="$(kubectl get wrenjob reaper-hello -o jsonpath='{.status.state}' 2>/dev/null || echo unknown)"
-  fail "07-reaper-backend — job did not reach Scheduling within 30s (state: ${actual})"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
+  info "Skipping: 07-reaper-backend (ReaperPod CRD not installed)"
+  SKIP_COUNT=$((SKIP_COUNT + 1))
 fi
-
-kubectl delete wrenjob reaper-hello --ignore-not-found 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Example 08 — Distributed Training
 # ---------------------------------------------------------------------------
-info "Running: 08-distributed-training"
-kubectl apply -f "${REPO_ROOT}/examples/08-distributed-training/configmap.yaml" 2>/dev/null
-kubectl apply -f "${REPO_ROOT}/examples/08-distributed-training/user.yaml" 2>/dev/null
-kubectl apply -f "${REPO_ROOT}/examples/08-distributed-training/job.yaml" 2>/dev/null
+if [[ "${REAPER_CRD_INSTALLED}" == "true" ]]; then
+  info "Running: 08-distributed-training"
+  kubectl apply -f "${REPO_ROOT}/examples/08-distributed-training/configmap.yaml" 2>/dev/null
+  kubectl apply -f "${REPO_ROOT}/examples/08-distributed-training/user.yaml" 2>/dev/null
+  kubectl apply -f "${REPO_ROOT}/examples/08-distributed-training/job.yaml" 2>/dev/null
 
-if wait_for_job_state "pytorch-ddp-training" "Scheduling" 30; then
-  pass "08-distributed-training (Scheduling — expected, no Reaper runtime)"
-  PASS_COUNT=$((PASS_COUNT + 1))
+  if wait_for_job_state "pytorch-ddp-training" "Scheduling" 30; then
+    pass "08-distributed-training (Scheduling — expected, no Reaper runtime)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    actual="$(kubectl get wrenjob pytorch-ddp-training -o jsonpath='{.status.state}' 2>/dev/null || echo unknown)"
+    fail "08-distributed-training — job did not reach Scheduling within 30s (state: ${actual})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+
+  kubectl delete wrenjob pytorch-ddp-training --ignore-not-found 2>/dev/null || true
 else
-  actual="$(kubectl get wrenjob pytorch-ddp-training -o jsonpath='{.status.state}' 2>/dev/null || echo unknown)"
-  fail "08-distributed-training — job did not reach Scheduling within 30s (state: ${actual})"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
+  info "Skipping: 08-distributed-training (ReaperPod CRD not installed)"
+  SKIP_COUNT=$((SKIP_COUNT + 1))
 fi
-
-kubectl delete wrenjob pytorch-ddp-training --ignore-not-found 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Summary
