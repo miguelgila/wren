@@ -289,4 +289,130 @@ mod tests {
         let (cpu, _, _) = mgr.reserved_on_node("node-1");
         assert_eq!(cpu, 2000);
     }
+
+    #[test]
+    fn reserve_then_release_frees_node_resources() {
+        // After releasing, the previously reserved node reports zero resources.
+        let mut mgr = ReservationManager::default();
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            8000,
+            16_000_000_000,
+            4,
+        );
+
+        let (cpu, mem, gpu) = mgr.reserved_on_node("node-0");
+        assert_eq!(cpu, 8000);
+        assert_eq!(mem, 16_000_000_000);
+        assert_eq!(gpu, 4);
+
+        mgr.release("job-1");
+
+        let (cpu, mem, gpu) = mgr.reserved_on_node("node-0");
+        assert_eq!(cpu, 0, "cpu should be 0 after release");
+        assert_eq!(mem, 0, "memory should be 0 after release");
+        assert_eq!(gpu, 0, "gpu should be 0 after release");
+    }
+
+    #[test]
+    fn releasing_all_jobs_leaves_manager_empty() {
+        // Release every reservation one by one; active_count reaches zero.
+        let mut mgr = ReservationManager::default();
+        mgr.reserve("job-a", &make_placement(&["node-0"]), 1000, 1_000_000, 0);
+        mgr.reserve("job-b", &make_placement(&["node-1"]), 1000, 1_000_000, 0);
+        mgr.reserve("job-c", &make_placement(&["node-2"]), 1000, 1_000_000, 0);
+
+        assert_eq!(mgr.active_count(), 3);
+
+        for job in ["job-a", "job-b", "job-c"] {
+            assert!(
+                mgr.release(job),
+                "release should return true for a known job"
+            );
+        }
+
+        assert_eq!(mgr.active_count(), 0);
+        assert!(mgr.reserved_jobs().is_empty());
+    }
+
+    #[test]
+    fn has_reservation_returns_false_for_unknown_job() {
+        let mgr = ReservationManager::default();
+        assert!(
+            !mgr.has_reservation("ghost-job"),
+            "has_reservation should be false for a job that was never reserved"
+        );
+    }
+
+    #[test]
+    fn reserved_jobs_returns_empty_on_fresh_manager() {
+        let mgr = ReservationManager::default();
+        assert!(
+            mgr.reserved_jobs().is_empty(),
+            "reserved_jobs should be empty when no reservations have been made"
+        );
+    }
+
+    #[test]
+    fn reserved_on_node_aggregates_across_multiple_jobs_then_partial_release() {
+        // Two jobs both reserved on node-0; releasing one job halves the resources.
+        let mut mgr = ReservationManager::default();
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            2,
+        );
+        mgr.reserve(
+            "job-2",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            2,
+        );
+
+        let (cpu, mem, gpu) = mgr.reserved_on_node("node-0");
+        assert_eq!(cpu, 8000);
+        assert_eq!(mem, 16_000_000_000);
+        assert_eq!(gpu, 4);
+
+        mgr.release("job-1");
+
+        let (cpu, mem, gpu) = mgr.reserved_on_node("node-0");
+        assert_eq!(cpu, 4000, "only job-2 should remain after releasing job-1");
+        assert_eq!(mem, 8_000_000_000);
+        assert_eq!(gpu, 2);
+    }
+
+    #[test]
+    fn reserve_same_job_twice_counts_as_single_reservation() {
+        // Re-reserving the same job name overwrites rather than accumulating.
+        let mut mgr = ReservationManager::default();
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
+        mgr.reserve(
+            "job-1",
+            &make_placement(&["node-0"]),
+            4000,
+            8_000_000_000,
+            0,
+        );
+
+        assert_eq!(
+            mgr.active_count(),
+            1,
+            "duplicate reserve for same job should not inflate active_count"
+        );
+
+        // Resources on node-0 should reflect only one reservation.
+        let (cpu, _, _) = mgr.reserved_on_node("node-0");
+        assert_eq!(cpu, 4000);
+    }
 }

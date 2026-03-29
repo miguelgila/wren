@@ -1,0 +1,36 @@
+# Distributed PyTorch training on bare-metal nodes via ReaperPod CRD.
+#
+# The Wren controller gang-schedules 2 nodes, then creates a ReaperPod CRD
+# per rank. The Reaper controller translates each into a Pod with
+# runtimeClassName: reaper-v2 — bare-metal execution with Kubernetes volumes.
+#
+# The training script is delivered via ConfigMap volume. PyTorch Gloo backend
+# connects the ranks over TCP for gradient synchronization.
+#
+# Prerequisites:
+#   kubectl apply -f configmap.yaml    # training script
+#   kubectl apply -f user.yaml         # user identity
+#   wren submit job.yaml
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: pytorch-ddp-training
+  annotations:
+    wren.giar.dev/user: researcher
+spec:
+  nodes: 2
+  tasksPerNode: 1
+  walltime: "10m"
+  backend: reaper
+  reaper:
+    command: ["python3", "/opt/train/train.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - name: training-script
+        mountPath: /opt/train
+        readOnly: true
+        configMap: pytorch-ddp-train
+  mpi:
+    implementation: openmpi
+    fabricInterface: eth0

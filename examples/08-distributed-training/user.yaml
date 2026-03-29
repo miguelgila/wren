@@ -1,0 +1,13 @@
+# WrenUser for the distributed training example.
+# Same identity as example 07 — maps "researcher" to uid/gid 1000.
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenUser
+metadata:
+  name: researcher
+spec:
+  uid: 1000
+  gid: 1000
+  supplementalGroups:
+    - 1000
+  homeDir: "/home/researcher"
+  defaultProject: "ml-training"

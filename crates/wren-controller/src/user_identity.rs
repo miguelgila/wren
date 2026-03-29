@@ -58,6 +58,142 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    // -------------------------------------------------------------------------
+    // Mock K8s client helpers
+    // -------------------------------------------------------------------------
+
+    /// Build a `kube::Client` whose only response is the given status code + body.
+    fn make_client_with_response(status: u16, body: &str) -> kube::Client {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use tower::service_fn;
+
+        let body = Bytes::from(body.to_owned());
+        let svc = service_fn(move |_req: http::Request<_>| {
+            let body = body.clone();
+            async move {
+                let resp = http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::from(body))
+                    .unwrap();
+                Ok::<_, std::convert::Infallible>(resp)
+            }
+        });
+        kube::Client::new(svc, "default")
+    }
+
+    fn make_annotations(user: &str) -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
+        m.insert("wren.giar.dev/user".to_string(), user.to_string());
+        m
+    }
+
+    fn wren_user_json(name: &str, uid: u32, gid: u32) -> String {
+        serde_json::json!({
+            "apiVersion": "wren.giar.dev/v1alpha1",
+            "kind": "WrenUser",
+            "metadata": { "name": name },
+            "spec": {
+                "uid": uid,
+                "gid": gid,
+                "supplementalGroups": [2000, 3000],
+                "homeDir": format!("/home/{}", name),
+                "defaultProject": "test-project"
+            }
+        })
+        .to_string()
+    }
+
+    // -------------------------------------------------------------------------
+    // resolve_user_identity async tests
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_user_identity_no_annotations() {
+        let client = make_client_with_response(200, "{}");
+        let result = resolve_user_identity(&client, None).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_identity_no_user_annotation() {
+        let client = make_client_with_response(200, "{}");
+        let annotations = BTreeMap::new(); // no wren.giar.dev/user key
+        let result = resolve_user_identity(&client, Some(&annotations))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_identity_user_found() {
+        let body = wren_user_json("alice", 1001, 1001);
+        let client = make_client_with_response(200, &body);
+        let annotations = make_annotations("alice");
+        let result = resolve_user_identity(&client, Some(&annotations))
+            .await
+            .unwrap();
+        let identity = result.expect("expected Some(UserIdentity)");
+        assert_eq!(identity.username, "alice");
+        assert_eq!(identity.uid, 1001);
+        assert_eq!(identity.gid, 1001);
+        assert_eq!(identity.supplemental_groups, vec![2000, 3000]);
+        assert_eq!(identity.home_dir.as_deref(), Some("/home/alice"));
+        assert_eq!(identity.default_project.as_deref(), Some("test-project"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_identity_user_not_found() {
+        let not_found = serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "wrenusers.wren.giar.dev \"bob\" not found",
+            "reason": "NotFound",
+            "code": 404
+        })
+        .to_string();
+        let client = make_client_with_response(404, &not_found);
+        let annotations = make_annotations("bob");
+        let result = resolve_user_identity(&client, Some(&annotations))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_identity_uid_zero_rejected() {
+        let body = wren_user_json("root-user", 0, 0);
+        let client = make_client_with_response(200, &body);
+        let annotations = make_annotations("root-user");
+        let result = resolve_user_identity(&client, Some(&annotations))
+            .await
+            .unwrap();
+        assert!(result.is_none(), "uid=0 should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_identity_api_error() {
+        let error_body = serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "internal server error",
+            "reason": "InternalError",
+            "code": 500
+        })
+        .to_string();
+        let client = make_client_with_response(500, &error_body);
+        let annotations = make_annotations("alice");
+        let result = resolve_user_identity(&client, Some(&annotations)).await;
+        assert!(result.is_err(), "500 should propagate as error");
+    }
+
+    // -------------------------------------------------------------------------
+    // extract_username tests (existing)
+    // -------------------------------------------------------------------------
+
     #[test]
     fn test_extract_username_present() {
         let mut annotations = BTreeMap::new();

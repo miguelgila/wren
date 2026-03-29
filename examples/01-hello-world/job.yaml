@@ -4,6 +4,8 @@ apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: hello-wren
+  annotations:
+    wren.giar.dev/user: demo-user
 spec:
   nodes: 1
   walltime: "5m"

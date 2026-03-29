@@ -90,17 +90,59 @@ pub struct ContainerSpec {
     pub env: Vec<EnvVar>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ReaperSpec {
-    /// Job script to execute on bare metal
-    pub script: String,
+    /// Command to execute on bare metal (e.g., ["python3", "/opt/train/train.py"]).
+    /// If not set, `script` is used with `/bin/sh -c`.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// Arguments to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Job script to execute on bare metal (wrapped in `/bin/sh -c`).
+    /// Ignored if `command` is set.
+    #[serde(default)]
+    pub script: Option<String>,
     /// Environment variables
     #[serde(default)]
     pub environment: std::collections::HashMap<String, String>,
     /// Working directory
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Volumes to mount (ConfigMap, Secret, hostPath, emptyDir)
+    #[serde(default)]
+    pub volumes: Vec<ReaperVolumeSpec>,
+    /// DNS resolution mode: "host" (default) or "kubernetes"
+    #[serde(default)]
+    pub dns_mode: Option<String>,
+    /// Named overlay group for shared overlay filesystem
+    #[serde(default)]
+    pub overlay_name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReaperVolumeSpec {
+    /// Volume name (used internally)
+    pub name: String,
+    /// Path inside the container/overlay where this volume is mounted
+    pub mount_path: String,
+    /// Mount as read-only
+    #[serde(default)]
+    pub read_only: bool,
+    /// ConfigMap name to mount
+    #[serde(default)]
+    pub config_map: Option<String>,
+    /// Secret name to mount
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// Host path to mount
+    #[serde(default)]
+    pub host_path: Option<String>,
+    /// Use an emptyDir volume
+    #[serde(default)]
+    pub empty_dir: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
@@ -437,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reaper_spec_serde() {
+    fn test_reaper_spec_script() {
         let yaml = r#"
             script: |
               #!/bin/bash
@@ -447,9 +489,71 @@ mod tests {
             workingDir: /home/user
         "#;
         let spec: ReaperSpec = serde_yaml::from_str(yaml).unwrap();
-        assert!(spec.script.contains("srun"));
+        assert!(spec.script.as_ref().unwrap().contains("srun"));
         assert_eq!(spec.environment["SCRATCH"], "/scratch");
         assert_eq!(spec.working_dir.as_deref(), Some("/home/user"));
+        assert!(spec.command.is_empty());
+        assert!(spec.volumes.is_empty());
+    }
+
+    #[test]
+    fn test_reaper_spec_command() {
+        let yaml = r#"
+            command: ["python3", "/opt/train/train.py"]
+            args: ["--epochs", "5"]
+            environment:
+              PYTHONUNBUFFERED: "1"
+        "#;
+        let spec: ReaperSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.command, vec!["python3", "/opt/train/train.py"]);
+        assert_eq!(spec.args, vec!["--epochs", "5"]);
+        assert!(spec.script.is_none());
+    }
+
+    #[test]
+    fn test_reaper_spec_volumes() {
+        let yaml = r#"
+            command: ["python3", "/opt/train/train.py"]
+            volumes:
+              - name: training-script
+                mountPath: /opt/train
+                readOnly: true
+                configMap: pytorch-ddp-train
+              - name: secrets
+                mountPath: /etc/secrets
+                readOnly: true
+                secret: my-secret
+              - name: scratch
+                mountPath: /scratch
+                hostPath: /mnt/scratch
+              - name: tmp
+                mountPath: /tmp/work
+                emptyDir: true
+        "#;
+        let spec: ReaperSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.volumes.len(), 4);
+        assert_eq!(spec.volumes[0].name, "training-script");
+        assert_eq!(spec.volumes[0].mount_path, "/opt/train");
+        assert!(spec.volumes[0].read_only);
+        assert_eq!(
+            spec.volumes[0].config_map.as_deref(),
+            Some("pytorch-ddp-train")
+        );
+        assert_eq!(spec.volumes[1].secret.as_deref(), Some("my-secret"));
+        assert_eq!(spec.volumes[2].host_path.as_deref(), Some("/mnt/scratch"));
+        assert!(spec.volumes[3].empty_dir);
+    }
+
+    #[test]
+    fn test_reaper_spec_dns_overlay() {
+        let yaml = r#"
+            command: ["./app"]
+            dnsMode: kubernetes
+            overlayName: shared-team
+        "#;
+        let spec: ReaperSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.dns_mode.as_deref(), Some("kubernetes"));
+        assert_eq!(spec.overlay_name.as_deref(), Some("shared-team"));
     }
 
     #[test]

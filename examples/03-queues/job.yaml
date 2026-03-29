@@ -3,6 +3,8 @@ apiVersion: wren.giar.dev/v1alpha1
 kind: WrenJob
 metadata:
   name: batch-job
+  annotations:
+    wren.giar.dev/user: demo-user
 spec:
   queue: batch
   nodes: 1

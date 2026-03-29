@@ -61,6 +61,7 @@ NO_CLEANUP=false
 VERBOSE=false
 ONLY_CLI=false
 ONLY_USER=false
+ONLY_REAPER=false
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -72,13 +73,15 @@ while [[ $# -gt 0 ]]; do
     --verbose)     VERBOSE=true; shift ;;
     --only-cli)    ONLY_CLI=true; shift ;;
     --usertests-only) ONLY_USER=true; shift ;;
+    --reaper-only) ONLY_REAPER=true; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli] [--usertests-only]"
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli] [--usertests-only] [--reaper-only]"
       echo "  --skip-cargo      Skip cargo build and Rust integration tests"
       echo "  --no-cleanup      Keep kind cluster after run"
       echo "  --verbose         Also print verbose output to stdout"
       echo "  --only-cli        Run only CLI integration tests (requires running cluster)"
       echo "  --usertests-only  Run only multi-user identity integration tests"
+      echo "  --reaper-only     Run only Reaper backend integration tests"
       echo ""
       echo "Environment variables:"
       echo "  CLUSTER_NAME   Kind cluster name (default: wren-test)"
@@ -89,7 +92,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli] [--usertests-only]" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--only-cli] [--usertests-only] [--reaper-only]" >&2
       exit 1
       ;;
   esac
@@ -98,6 +101,9 @@ done
 # Apply flag effects to config variables
 if $ONLY_USER; then
   TESTS="user"
+  SKIP_BUILD="${SKIP_BUILD:-0}"
+elif $ONLY_REAPER; then
+  TESTS="reaper"
   SKIP_BUILD="${SKIP_BUILD:-0}"
 elif $ONLY_CLI; then
   TESTS="cli"
@@ -444,6 +450,30 @@ install_crds() {
     kubectl wait --for=condition=Established \
         crd/wrenqueues.wren.giar.dev \
         --timeout=30s 2>/dev/null || warn "wrenqueues CRD not found — skipping"
+
+    # Install ReaperPod CRD (needed for reaper backend tests).
+    # Prefer the subchart CRD (from helm dependency update), fall back to sibling project.
+    local reaper_crd=""
+    local subchart_crd="${REPO_ROOT}/charts/wren/charts/reaper/crds/reaperpods.reaper.giar.dev.yaml"
+    local sibling_crd="${REPO_ROOT}/../reaper/deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml"
+
+    if [[ -f "$subchart_crd" ]]; then
+        reaper_crd="$subchart_crd"
+        log "Using ReaperPod CRD from reaper subchart"
+    elif [[ -f "$sibling_crd" ]]; then
+        reaper_crd="$sibling_crd"
+        log "Using ReaperPod CRD from sibling reaper project"
+    fi
+
+    if [[ -n "$reaper_crd" ]]; then
+        kubectl apply -f "$reaper_crd"
+        kubectl wait --for=condition=Established \
+            crd/reaperpods.reaper.giar.dev \
+            --timeout=30s 2>/dev/null || warn "ReaperPod CRD not established"
+        crd_count=$(( crd_count + 1 ))
+    else
+        warn "ReaperPod CRD not found (run 'helm dependency update charts/wren' or check sibling reaper project) — reaper backend tests may fail"
+    fi
 
     success "CRDs installed (${crd_count} files)"
 }
@@ -2307,6 +2337,294 @@ run_user_tests() {
 }
 
 # ===========================================================================
+# Reaper backend integration tests
+#
+# These tests verify that the Wren controller correctly accepts and processes
+# WrenJobs with backend: reaper.  No actual Reaper agent is required — tests
+# exercise CRD validation, field storage, and controller-side behavior only.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Reaper test 1: WrenJob with backend: reaper is accepted by the controller.
+# ---------------------------------------------------------------------------
+_reaper_test_backend_type_accepted() {
+    local job_name="reaper-backend-test-$$"
+    kubectl apply -f - <<YAML
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: wren-test-user
+spec:
+  queue: default
+  priority: 50
+  nodes: 1
+  tasksPerNode: 1
+  backend: reaper
+  reaper:
+    script: |
+      #!/bin/bash
+      echo "hello from reaper"
+    environment:
+      SCRATCH: /scratch
+YAML
+
+    # Wait briefly for the controller to process it
+    local max_wait=15
+    local elapsed=0
+    local status=""
+    while [[ $elapsed -lt $max_wait ]]; do
+        status=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+        if [[ -n "$status" ]]; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    # Clean up
+    kubectl delete wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        --ignore-not-found >> "$LOG_FILE" 2>&1
+
+    if [[ -z "$status" ]]; then
+        error "WrenJob with backend: reaper was not processed by controller"
+        return 1
+    fi
+
+    log "PASS: WrenJob with backend: reaper accepted, status: ${status}"
+}
+
+# ---------------------------------------------------------------------------
+# Reaper test 2: WrenJob with backend: reaper but no reaper spec should fail.
+# ---------------------------------------------------------------------------
+_reaper_test_reaper_spec_required() {
+    local job_name="reaper-no-spec-test-$$"
+    kubectl apply -f - <<YAML
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: wren-test-user
+spec:
+  queue: default
+  priority: 50
+  nodes: 1
+  tasksPerNode: 1
+  backend: reaper
+YAML
+
+    local max_wait=15
+    local elapsed=0
+    local status=""
+    local message=""
+    while [[ $elapsed -lt $max_wait ]]; do
+        status=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+        message=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.status.message}' 2>/dev/null || echo "")
+        if [[ "$status" == "Failed" ]]; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    # Clean up
+    kubectl delete wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        --ignore-not-found >> "$LOG_FILE" 2>&1
+
+    if [[ "$status" != "Failed" ]]; then
+        error "Expected Failed status for reaper job without spec, got: ${status}"
+        return 1
+    fi
+
+    log "PASS: WrenJob without reaper spec correctly failed: ${message}"
+}
+
+# ---------------------------------------------------------------------------
+# Reaper test 3: Reaper spec fields are stored correctly in the CRD.
+# ---------------------------------------------------------------------------
+_reaper_test_reaper_spec_fields_stored() {
+    local job_name="reaper-fields-test-$$"
+    kubectl apply -f - <<YAML
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: wren-test-user
+spec:
+  queue: default
+  priority: 50
+  nodes: 2
+  tasksPerNode: 1
+  backend: reaper
+  reaper:
+    script: |
+      #!/bin/bash
+      module load cray-mpich
+      srun ./my_app
+    environment:
+      SCRATCH: /scratch/project
+      MY_VAR: test-value
+    workingDir: /scratch/project
+  mpi:
+    implementation: cray-mpich
+    sshAuth: false
+    fabricInterface: hsn0
+YAML
+
+    sleep 2
+
+    local script
+    script=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.reaper.script}' 2>/dev/null || echo "")
+    local env_scratch
+    env_scratch=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.reaper.environment.SCRATCH}' 2>/dev/null || echo "")
+    local working_dir
+    working_dir=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.reaper.workingDir}' 2>/dev/null || echo "")
+    local mpi_impl
+    mpi_impl=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.mpi.implementation}' 2>/dev/null || echo "")
+    local fabric
+    fabric=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.spec.mpi.fabricInterface}' 2>/dev/null || echo "")
+
+    # Clean up
+    kubectl delete wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        --ignore-not-found >> "$LOG_FILE" 2>&1
+
+    local failures=0
+    if [[ -z "$script" ]] || ! echo "$script" | grep -q "cray-mpich"; then
+        error "reaper script not stored correctly"
+        failures=$((failures + 1))
+    else
+        log "  reaper.script: ok"
+    fi
+    if [[ "$env_scratch" != "/scratch/project" ]]; then
+        error "reaper environment.SCRATCH not stored: got '${env_scratch}'"
+        failures=$((failures + 1))
+    else
+        log "  reaper.environment.SCRATCH: ${env_scratch} (correct)"
+    fi
+    if [[ "$working_dir" != "/scratch/project" ]]; then
+        error "reaper workingDir not stored: got '${working_dir}'"
+        failures=$((failures + 1))
+    else
+        log "  reaper.workingDir: ${working_dir} (correct)"
+    fi
+    if [[ "$mpi_impl" != "cray-mpich" ]]; then
+        error "mpi implementation not stored: got '${mpi_impl}'"
+        failures=$((failures + 1))
+    else
+        log "  mpi.implementation: ${mpi_impl} (correct)"
+    fi
+    if [[ "$fabric" != "hsn0" ]]; then
+        error "mpi fabricInterface not stored: got '${fabric}'"
+        failures=$((failures + 1))
+    else
+        log "  mpi.fabricInterface: ${fabric} (correct)"
+    fi
+
+    if [[ $failures -gt 0 ]]; then
+        return 1
+    fi
+
+    log "PASS: All reaper spec fields stored correctly in CRD"
+}
+
+# ---------------------------------------------------------------------------
+# Reaper test 4: Reaper job with valid WrenUser is processed without identity
+#               errors (stays in Scheduling — no Reaper agents in Kind).
+# ---------------------------------------------------------------------------
+_reaper_test_user_identity_on_reaper_job() {
+    local job_name="reaper-user-test-$$"
+    kubectl apply -f - <<YAML
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: ${job_name}
+  namespace: ${TEST_NAMESPACE}
+  annotations:
+    wren.giar.dev/user: wren-test-user
+spec:
+  queue: default
+  priority: 50
+  nodes: 1
+  tasksPerNode: 1
+  backend: reaper
+  reaper:
+    script: "echo test"
+    environment: {}
+YAML
+
+    local max_wait=15
+    local elapsed=0
+    local status=""
+    while [[ $elapsed -lt $max_wait ]]; do
+        status=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+            -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+        if [[ -n "$status" ]]; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    # Capture message before cleanup
+    local message=""
+    message=$(kubectl get wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        -o jsonpath='{.status.message}' 2>/dev/null || echo "")
+
+    # Clean up
+    kubectl delete wrenjob "${job_name}" -n "${TEST_NAMESPACE}" \
+        --ignore-not-found >> "$LOG_FILE" 2>&1
+
+    # The job must not have failed due to user identity resolution
+    if [[ "$status" == "Failed" ]]; then
+        if echo "$message" | grep -qi "user\|identity\|wrenuser"; then
+            error "Reaper job failed due to user identity: ${message}"
+            return 1
+        fi
+    fi
+
+    log "PASS: Reaper job with valid user identity processed without identity errors, status: ${status}"
+}
+
+# ---------------------------------------------------------------------------
+# Wrapper functions (mirror the user_test_* / smoke_test_* pattern)
+# ---------------------------------------------------------------------------
+reaper_test_backend_type_accepted()    { run_test "reaper backend type accepted"            _reaper_test_backend_type_accepted; }
+reaper_test_reaper_spec_required()     { run_test "reaper spec required for reaper backend"  _reaper_test_reaper_spec_required; }
+reaper_test_reaper_spec_fields_stored(){ run_test "reaper spec fields stored in CRD"         _reaper_test_reaper_spec_fields_stored; }
+reaper_test_user_identity_on_reaper_job(){ run_test "user identity on reaper job"            _reaper_test_user_identity_on_reaper_job; }
+
+# ---------------------------------------------------------------------------
+# Run all Reaper backend integration tests
+# ---------------------------------------------------------------------------
+run_reaper_tests() {
+    section "Running Reaper backend integration tests"
+
+    if [[ "$TESTS" != "reaper" && "$TESTS" != "all" ]]; then
+        record_skip "Reaper backend tests (TESTS=${TESTS})"
+        return
+    fi
+
+    reaper_test_backend_type_accepted
+    reaper_test_reaper_spec_required
+    reaper_test_reaper_spec_fields_stored
+    reaper_test_user_identity_on_reaper_job
+}
+
+# ===========================================================================
 # CLI integration tests
 #
 # These tests exercise the `wren` CLI binary against a live cluster. They
@@ -2817,7 +3135,7 @@ run_cli_tests() {
 run_shell_tests() {
     section "Running shell smoke tests"
 
-    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" || "$TESTS" == "user" ]]; then
+    if [[ "$TESTS" == "rust" || "$TESTS" == "cli" || "$TESTS" == "user" || "$TESTS" == "reaper" ]]; then
         record_skip "Shell smoke tests (TESTS=${TESTS})"
         return
     fi
@@ -2850,6 +3168,7 @@ main() {
     echo "  No cleanup:  ${NO_CLEANUP}"
     echo "  Only CLI:    ${ONLY_CLI}"
     echo "  Only User:   ${ONLY_USER}"
+    echo "  Only Reaper: ${ONLY_REAPER}"
     echo "  Verbose:     ${VERBOSE}"
     echo "  Log file:    ${LOG_FILE}"
     echo "========================================================"
@@ -2876,6 +3195,7 @@ main() {
     # Run the requested test suites
     run_shell_tests
     run_user_tests
+    run_reaper_tests
     run_cli_tests
     run_rust_tests
 

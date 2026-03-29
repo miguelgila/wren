@@ -1,0 +1,28 @@
+# Reaper backend job — runs a script directly on bare metal via the Reaper agent.
+# Requires a WrenUser CRD to map the submitting user to a Unix UID/GID.
+# The controller sends the job to the Reaper agent's HTTP API on each allocated node.
+#
+# Prerequisites:
+#   kubectl apply -f user.yaml   # Create the WrenUser first
+#   wren submit job.yaml
+apiVersion: wren.giar.dev/v1alpha1
+kind: WrenJob
+metadata:
+  name: reaper-hello
+  annotations:
+    wren.giar.dev/user: researcher
+spec:
+  nodes: 1
+  walltime: "5m"
+  backend: reaper
+  reaper:
+    script: |
+      #!/bin/bash
+      echo "Hello from bare metal!"
+      echo "Running as: $(whoami) (uid=$(id -u), gid=$(id -g))"
+      echo "Home: $HOME"
+      echo "Hostname: $(hostname)"
+      echo "Working directory: $(pwd)"
+    environment:
+      SCRATCH: /scratch/project
+    workingDir: /tmp
