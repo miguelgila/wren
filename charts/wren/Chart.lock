@@ -1,0 +1,6 @@
+dependencies:
+- name: reaper
+  repository: oci://ghcr.io/miguelgila/charts
+  version: 0.2.27
+digest: sha256:cc3fddb2b14bf6328e0c0a6294f35211fb2268968277d7ba579edda0b4bea11d
+generated: "2026-04-05T22:26:53.221439+02:00"
