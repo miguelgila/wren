@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add integration tests for pod preservation and log retrieval([c5da1e2](https://github.com/miguelgila/wren/commit/c5da1e2b2e5f363cceffd2604083c59e59db56eb))
 
+### CI/CD
+
+- Remove duplicate runs on merge and retry logic in integration tests (#34)([1a59432](https://github.com/miguelgila/wren/commit/1a59432deaf2d440a4ef635701ea9b7b580137d7))
+
 ### Miscellaneous
 
 - Suppress dead_code warnings for scaffolded modules([cebe40a](https://github.com/miguelgila/wren/commit/cebe40a2a79f37c0461f3154dae508240e2d7348))
