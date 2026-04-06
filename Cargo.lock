@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "wren-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "wren-controller"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "wren-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3050,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "wren-scheduler"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "tokio",

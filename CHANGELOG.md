@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous
 
+- Update Reaper subchart to OCI registry v0.2.27 (#35)([38f3628](https://github.com/miguelgila/wren/commit/38f36281517283a92d7fbdb962bae1e5d8a59fbb))
 - Suppress dead_code warnings for scaffolded modules([cebe40a](https://github.com/miguelgila/wren/commit/cebe40a2a79f37c0461f3154dae508240e2d7348))
 - Remove draft root files, add integration test plan([d2093f2](https://github.com/miguelgila/wren/commit/d2093f2f2b24924dc6f863b085c32ad064f3607c))
 
