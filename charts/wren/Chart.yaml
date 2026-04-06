@@ -17,6 +17,6 @@ maintainers:
     url: https://github.com/miguelgila
 dependencies:
   - name: reaper
-    version: ">=0.2.11"
+    version: ">=0.2.25"
     repository: "oci://ghcr.io/miguelgila/charts"
     condition: reaper.enabled
