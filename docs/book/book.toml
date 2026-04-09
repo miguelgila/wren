@@ -1,0 +1,13 @@
+[book]
+title = "Wren Documentation"
+description = "A lightweight, Slurm-inspired HPC job scheduler for Kubernetes with multi-node MPI support"
+authors = ["Miguel Gil Álvarez"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/miguelgila/wren"
+edit-url-template = "https://github.com/miguelgila/wren/edit/main/docs/book/{path}"
