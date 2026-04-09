@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Add mdBook documentation site with GitHub Pages deployment (#37)([3233d58](https://github.com/miguelgila/wren/commit/3233d58e87a16b81fad2e5b086731f7455a4c9e2))
 - Documentation review, quickstart improvements, CLI context support (#4)([c33e187](https://github.com/miguelgila/wren/commit/c33e1874d5a6ec5383996843887799cd47227c6c))
 - Rewrite README, fix CLAUDE.md, consolidate CI (#3)([3d61c62](https://github.com/miguelgila/wren/commit/3d61c624ff268f15857fb412f5755a18567124e8))
 - Update milestones with accurate phase status and add multi-user Phase 5([2afca30](https://github.com/miguelgila/wren/commit/2afca30b13f69c4f9cf77191be74e913cddc39ca))
